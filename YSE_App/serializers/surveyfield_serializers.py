@@ -34,16 +34,17 @@ class SurveyFieldSerializer(serializers.HyperlinkedModelSerializer):
 
 		return instance
 
-class SurveyFieldMSBSerializer(serializers.HyperlinkedModelSerializer):
+class SurveyFieldMSBSerializer(serializers.ModelSerializer):
 	obs_group = serializers.HyperlinkedRelatedField(queryset=ObservationGroup.objects.all(), view_name='observationgroup-detail')
-	survey_fields = serializers.HyperlinkedRelatedField(queryset=SurveyField.objects.all(), many=True, view_name='surveyfield-detail')
-
+#	survey_fields = serializers.HyperlinkedRelatedField(queryset=SurveyField.objects.all(), many=True, view_name='surveyfield-detail')
+	
 	created_by = serializers.HyperlinkedRelatedField(read_only=True, view_name='user-detail')
 	modified_by = serializers.HyperlinkedRelatedField(read_only=True, view_name='user-detail')
 
 	class Meta:
-		model = SurveyField
+		model = SurveyFieldMSB
 		fields = "__all__"
+		depth = 1
 
 	def create(self, validated_data):
 
@@ -54,7 +55,8 @@ class SurveyFieldMSBSerializer(serializers.HyperlinkedModelSerializer):
 
 		surveyfieldmsb = SurveyFieldMSB.objects.create(**validated_data)
 		surveyfieldmsb.save()
-
+		instance.active = validated_data.get('active', instance.active)
+        
 		if survey_fields_exist:
 			for field in survey_fields:
 				survey_field_result = SurveyField.objects.filter(pk=tag.id)
@@ -69,7 +71,8 @@ class SurveyFieldMSBSerializer(serializers.HyperlinkedModelSerializer):
 	def update(self, instance, validated_data):
 		instance.obs_group = validated_data.get('obs_group', instance.obs_group)
 		instance.name = validated_data.get('name', instance.name)
-
+		instance.active = validated_data.get('active', instance.active)
+		
 		if 'survey_fields' in validated_data.keys():
 			# Disassociate existing `Transient Tags`
 			survey_fields = instance.survey_fields.all()

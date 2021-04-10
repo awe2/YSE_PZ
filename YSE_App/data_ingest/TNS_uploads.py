@@ -46,7 +46,7 @@ from django.conf import settings as djangoSettings
 import argparse, configparser
 import signal
 
-reg_obj = "https://wis-tns.weizmann.ac.il/object/(\w+)"
+reg_obj = "https://www.wis-tns.org/object/(\w+)"
 reg_ra = "\>\sRA[\=\*a-zA-Z\<\>\" ]+(\d{2}:\d{2}:\d{2}\.\d+)"
 reg_dec = "DEC[\=\*a-zA-Z\<\>\" ]+((?:\+|\-)\d{2}:\d{2}:\d{2}\.\d+)\<\/em\>\,"
 
@@ -124,12 +124,16 @@ class processTNS:
 								help='database login, if post=True (default=%default)')
 			parser.add_argument('--dbpassword', default=config.get('main','dbpassword'), type=str,
 								help='database password, if post=True (default=%default)')
+			parser.add_argument('--dbemailpassword', default=config.get('main','dbemailpassword'), type=str,
+								help='database password, if post=True (default=%default)')
 			parser.add_argument('--dburl', default=config.get('main','dburl'), type=str,
 								help='URL to POST transients to a database (default=%default)')
 			parser.add_argument('--tnsapi', default=config.get('main','tnsapi'), type=str,
 								help='TNS API URL (default=%default)')
 			parser.add_argument('--tnsapikey', default=config.get('main','tnsapikey'), type=str,
 								help='TNS API key (default=%default)')
+			parser.add_argument('--tns_recent_ndays', default=config.get('main','tns_recent_ndays'), type=str,
+								help='time interval for grabbing recent TNS events (default=%default)')
 			parser.add_argument('--hostmatchrad', default=config.get('main','hostmatchrad'), type=float,
 								help='matching radius for hosts (arcmin) (default=%default)')
 			parser.add_argument('--ztfurl', default=config.get('main','ztfurl'), type=str,
@@ -152,6 +156,8 @@ class processTNS:
 			parser.add_argument('--dbemail', default="", type=str,
 								help='database login, if post=True (default=%default)')
 			parser.add_argument('--dbpassword', default="", type=str,
+								help='database password, if post=True (default=%default)')
+			parser.add_argument('--dbemailpassword', default="", type=str,
 								help='database password, if post=True (default=%default)')
 			parser.add_argument('--url', default="", type=str,
 								help='URL to POST transients to a database (default=%default)')
@@ -238,6 +244,9 @@ class processTNS:
 				TransientDict['best_spec_class'] = evt_type
 				TransientDict['TNS_spec_class'] = evt_type
 
+			if jd['internal_names']:
+				TransientDict['internal_names'] = jd['internal_names']
+				
 		return TransientDict
 
 	def getZTFPhotometry(self,sc):
@@ -624,6 +633,32 @@ class processTNS:
 		else: nsn = self.GetAndUploadAllData(objs,ras,decs,doNED=False,doTNS=doTNS)
 		return nsn
 
+	def GetRecentEvents(self,ndays=None,doTNS=True):
+		#date_format = '%Y-%m-%d'
+		datemin = (datetime.now() - timedelta(days=ndays)).isoformat() #strftime(date_format)
+		search_obj=[("ra",""), ("dec",""), ("radius",""), ("units",""),
+					("objname",""), ("internal_name",""),("public_timestamp",datemin)]
+		response=search(self.tnsapi, search_obj, self.tnsapikey)
+		json_data = format_to_json(response.text)
+
+		objs,ras,decs = [],[],[]
+		for jd in json_data['data']['reply']:
+			TNSGetSingle = [("objname",jd['objname']),
+							("photometry","0"),
+							("spectra","0")]
+
+			response_single=get(self.tnsapi, TNSGetSingle, self.tnsapikey)
+			json_data_single = format_to_json(response_single.text)
+
+			objs.append(json_data_single['data']['reply']['objname'])
+			ras.append(json_data_single['data']['reply']['ra'])
+			decs.append(json_data_single['data']['reply']['dec'])
+
+		if len(objs): nsn = self.GetAndUploadAllData(objs,ras,decs,doNED=self.redoned,doTNS=doTNS)
+		else: nsn = 0
+		return nsn
+
+	
 	def ProcessTNSEmails(self):
 		body = ""
 		html = ""
@@ -712,12 +747,6 @@ class processTNS:
 			try:
 				signal.alarm(600)
 				ebvall = sfd(scall)*0.86
-				#for sc in scall:
-				#	try:
-				#		ebvall += [float('%.3f'%sfd(sc)*0.86)]
-				#	except:
-				#		dust_table_l = IrsaDust.get_query_table(sc)
-				#		ebvall += [dust_table_l['ext SandF mean'][0]]
 			except:
 				print('MW E(B-V) timeout!')
 				ebv_timeout = True
@@ -739,8 +768,10 @@ class processTNS:
 				ned_timeout = True
 
 			print('E(B-V)/NED time: %.1f seconds'%(time.time()-ebvtstart))
-
+			signal.alarm(0)
+		
 		tstart = time.time()
+		print('getting TNS data')
 		TNSData = []
 		json_data = []
 		total_objs = 0
@@ -785,7 +816,7 @@ class processTNS:
 			# For Item in Email, Get NED
 			########################################################
 			if jd is not None:
-				if type(jd['data']['reply']['name']) == str:
+				if type(jd['data']['reply']['objname']) == str:
 					jd = jd['data']['reply']
 				else:
 					jd = None
@@ -846,7 +877,20 @@ class processTNS:
 
 			try: print('YSE_PZ says: %s'%json.loads(r.text)['message'])
 			except: print(r.text)
-		except Exception as e: raise RuntimeError(e)
+		except Exception as e:
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			nsn = 0
+			smtpserver = "%s:%s" % (self.options.SMTP_HOST, self.options.SMTP_PORT)
+			from_addr = "%s@gmail.com" % self.options.SMTP_LOGIN
+			subject = "TNS Transient Upload Failure in GetRecentEvents"
+			print("Sending error email")
+			html_msg = "Alert : YSE_PZ Failed to upload transients in TNS_uploads.TNS_recent()\n"
+			html_msg += "Error : %s at line number %s"
+			sendemail(from_addr, self.options.dbemail, subject,
+					  html_msg%(e,exc_tb.tb_lineno),
+					  self.options.SMTP_LOGIN, self.options.dbemailpassword, smtpserver)
+	
+			#raise RuntimeError(e)
 		print("Process done.")
 
 
@@ -904,14 +948,31 @@ def sendemail(from_addr, to_addr,
 			server.login(login, password)
 			resp = server.sendmail(from_addr, [to_addr], msg.as_string())
 			print("Send success")
-		except:
-			print("Send fail")
+		except Exception as e:
+			print("Send fail; %s"%e)
+			import pdb; pdb.set_trace()
 
 def format_to_json(source):
 	# change data to json format and return
 	parsed=json.loads(source,object_pairs_hook=OrderedDict)
 	#result=json.dumps(parsed,indent=4)
 	return parsed #result
+
+def search(url,json_list,api_key):
+	try:
+		# url for search obj
+		search_url=url+'/search'
+		# change json_list to json format
+		json_file=OrderedDict(json_list)
+		# construct the list of (key,value) pairs
+		search_data=[('api_key',(None, api_key)),
+					 ('data',(None,json.dumps(json_file)))]
+		# search obj using request module
+		response=requests.post(search_url, files=search_data)
+		# return response
+		return response
+	except Exception as e:
+		return [None,'Error message : \n'+str(e)]
 
 def get(url,json_list,api_key):
 	try:
@@ -933,7 +994,7 @@ class TNS_emails(CronJobBase):
 	RUN_EVERY_MINS = 3
 
 	schedule = Schedule(run_every_mins=RUN_EVERY_MINS)
-	code = 'YSE_App.util.TNS_Synopsis.TNS_uploads.TNS_emails'
+	code = 'YSE_App.data_ingest.TNS_uploads.TNS_emails'
 
 	def do(self):
 
@@ -961,6 +1022,7 @@ class TNS_emails(CronJobBase):
 		tnsproc.password = options.password
 		tnsproc.dblogin = options.dblogin
 		tnsproc.dbpassword = options.dbpassword
+		tnsproc.dbemailpassword = options.dbemailpassword
 		tnsproc.dburl = options.dburl
 		tnsproc.status = options.status
 		tnsproc.settingsfile = options.settingsfile
@@ -989,7 +1051,7 @@ class TNS_emails(CronJobBase):
 			html_msg += "Error : %s at line number %s"
 			sendemail(from_addr, options.dbemail, subject,
 					  html_msg%(e,exc_tb.tb_lineno),
-					  options.SMTP_LOGIN, options.dbpassword, smtpserver)
+					  options.SMTP_LOGIN, options.dbemailpassword, smtpserver)
 
 		print('TNS -> YSE_PZ took %.1f seconds for %i transients'%(time.time()-tstart,nsn))
 
@@ -999,7 +1061,7 @@ class TNS_updates(CronJobBase):
 	RUN_AT_TIMES = ['00:00', '08:00']
 
 	schedule = Schedule(run_at_times=RUN_AT_TIMES)
-	code = 'YSE_App.util.TNS_Synopsis.TNS_uploads.TNS_updates'
+	code = 'YSE_App.data_ingest.TNS_uploads.TNS_updates'
 
 	def do(self):
 
@@ -1027,12 +1089,13 @@ class TNS_updates(CronJobBase):
 		tnsproc.password = options.password
 		tnsproc.dblogin = options.dblogin
 		tnsproc.dbpassword = options.dbpassword
+		tnsproc.dbemailpassword = options.dbemailpassword
 		tnsproc.dburl = options.dburl
 		tnsproc.status = options.status
 		tnsproc.settingsfile = options.settingsfile
 		tnsproc.clobber = options.clobber
 		tnsproc.noupdatestatus = options.noupdatestatus
-		tnsproc.redoned = True
+		tnsproc.redoned = False #True
 		tnsproc.nedradius = options.nedradius
 		tnsproc.tnsapi = options.tnsapi
 		tnsproc.tnsapikey = options.tnsapikey
@@ -1052,7 +1115,7 @@ class TNS_updates(CronJobBase):
 			html_msg += "Error : %s at line number %s"
 			sendemail(from_addr, options.dbemail, subject,
 					  html_msg%(e,exc_tb.tb_lineno),
-					  options.SMTP_LOGIN, options.dbpassword, smtpserver)
+					  options.SMTP_LOGIN, options.dbemailpassword, smtpserver)
 
 		print('TNS -> YSE_PZ took %.1f seconds for %i transients'%(time.time()-tstart,nsn))
 
@@ -1062,7 +1125,7 @@ class TNS_Ignore_updates(CronJobBase):
 	RUN_EVERY_MINS = 4320
 	schedule = Schedule(run_every_mins=RUN_EVERY_MINS,run_at_times=RUN_AT_TIMES)
 
-	code = 'YSE_App.util.TNS_Synopsis.TNS_uploads.TNS_Ignore_updates'
+	code = 'YSE_App.data_ingest.TNS_uploads.TNS_Ignore_updates'
 
 	def do(self):
 
@@ -1090,12 +1153,13 @@ class TNS_Ignore_updates(CronJobBase):
 		tnsproc.password = options.password
 		tnsproc.dblogin = options.dblogin
 		tnsproc.dbpassword = options.dbpassword
+		tnsproc.dbemailpassword = options.dbemailpassword
 		tnsproc.dburl = options.dburl
 		tnsproc.status = options.status
 		tnsproc.settingsfile = options.settingsfile
 		tnsproc.clobber = options.clobber
 		tnsproc.noupdatestatus = options.noupdatestatus
-		tnsproc.redoned = True
+		tnsproc.redoned = False #True
 		tnsproc.nedradius = options.nedradius
 		tnsproc.tnsapi = options.tnsapi
 		tnsproc.tnsapikey = options.tnsapikey
@@ -1114,7 +1178,69 @@ class TNS_Ignore_updates(CronJobBase):
 			html_msg += "Error : %s at line number %s"
 			sendemail(from_addr, options.dbemail, subject,
 					  html_msg%(e,exc_tb.tb_lineno),
-					  options.SMTP_LOGIN, options.dbpassword, smtpserver)
+					  options.SMTP_LOGIN, options.dbemailpassword, smtpserver)
 
 		print('TNS -> YSE_PZ took %.1f seconds for %i transients'%(time.time()-tstart,nsn))
 		
+class TNS_recent(CronJobBase):
+
+	RUN_AT_TIMES = ['00:00', '08:00']
+
+	schedule = Schedule(run_at_times=RUN_AT_TIMES)
+	code = 'YSE_App.data_ingest.TNS_uploads.TNS_updates'
+
+	def do(self):
+
+		# execute only if run as a script
+		print("checking for recent TNS events at {}".format(datetime.now().isoformat()))
+		usagestring = "TNS_Synopsis.py <options>"
+
+		tstart = time.time()
+		tnsproc = processTNS()
+
+		# read in the options from the param file and the command line
+		# some convoluted syntax here, making it so param file is not required
+		parser = tnsproc.add_options(usage=usagestring)
+		options,  args = parser.parse_known_args()
+		options.settingsfile = "%s/settings.ini"%djangoSettings.PROJECT_DIR
+		
+		config = configparser.ConfigParser()
+		config.read(options.settingsfile)
+
+		parser = tnsproc.add_options(usage=usagestring,config=config)
+		options,  args = parser.parse_known_args()
+		tnsproc.hostmatchrad = options.hostmatchrad
+
+		tnsproc.login = options.login
+		tnsproc.password = options.password
+		tnsproc.dblogin = options.dblogin
+		tnsproc.dbpassword = options.dbpassword
+		tnsproc.dbemailpassword = options.dbemailpassword
+		tnsproc.dburl = options.dburl
+		tnsproc.status = options.status
+		tnsproc.settingsfile = options.settingsfile
+		tnsproc.clobber = options.clobber
+		tnsproc.noupdatestatus = options.noupdatestatus
+		tnsproc.redoned = True
+		tnsproc.nedradius = options.nedradius
+		tnsproc.tnsapi = options.tnsapi
+		tnsproc.tnsapikey = options.tnsapikey
+		tnsproc.ztfurl = options.ztfurl
+		tnsproc.ndays = float(options.tns_recent_ndays)
+		try:
+			tnsproc.noupdatestatus = True
+			nsn = tnsproc.GetRecentEvents(ndays=tnsproc.ndays)
+		except Exception as e:
+			exc_type, exc_obj, exc_tb = sys.exc_info()
+			nsn = 0
+			smtpserver = "%s:%s" % (options.SMTP_HOST, options.SMTP_PORT)
+			from_addr = "%s@gmail.com" % options.SMTP_LOGIN
+			subject = "TNS Transient Upload Failure in GetRecentEvents"
+			print("Sending error email")
+			html_msg = "Alert : YSE_PZ Failed to upload transients in TNS_uploads.TNS_recent()\n"
+			html_msg += "Error : %s at line number %s"
+			sendemail(from_addr, options.dbemail, subject,
+					  html_msg%(e,exc_tb.tb_lineno),
+					  options.SMTP_LOGIN, options.dbemailpassword, smtpserver)
+
+		print('TNS -> YSE_PZ took %.1f seconds for %i transients'%(time.time()-tstart,nsn))

@@ -81,7 +81,7 @@ class ClassicalResourceForm(ModelForm):
 		fields = [
 			'telescope',
 			'principal_investigator']
-
+		
 class ToOResourceForm(ModelForm):
 
 	awarded_too_hours = forms.FloatField(initial=0)
@@ -184,8 +184,8 @@ class TransientObservationTaskForm(ModelForm):
 			'followup']
 
 class QueryModelChoiceField(forms.ModelChoiceField):
-    def label_from_instance(self, obj):
-        return obj.__unicode__
+	def label_from_instance(self, obj):
+		return obj.__unicode__
 
 class AddDashboardQueryForm(ModelForm):
 	query = QueryModelChoiceField(Query.objects.all(),required=False)
@@ -244,7 +244,7 @@ class SpectrumUploadForm(ModelForm):
 		'LFC','DBSP','lay - MIKE','lay - LDSS-3',
 		'aade - MagE','aade - Boller & Chivens',
 		'WFC3','STIS','IRS','B&C-Asi-1.22m',
-		'aade - IMACS','lay - LDSS-2','AFOSC',
+		'aade - IMACS','lay - LDSS-2','ALFOSC',
 		'uPont - Mod-spec','uPont - B&C-duPont',
 		'uPont - WFCCD','V-grism','UV-grism',
 		'T2 - X-Shooter','.2m - EFOSC-2.2','TT - Sofi',
@@ -252,10 +252,23 @@ class SpectrumUploadForm(ModelForm):
 		'OSIRIS','FLOYDS-N','FLOYDS-S','NIRC2',
 		'NIRSPEC','NIRES','KCWI','ESI',
 		'DEIMOS','OSIRIS','MOSFIRE','LRIS',
-		'HIRES','GMOS','Goodman','KAST','WiFeS','WFCCD']
+		'HIRES','GMOS','Goodman','KAST','WiFeS','WFCCD','DIS','MMT Binospec','SpeX']
 	instrument = forms.ModelChoiceField(Instrument.objects.filter(Q(name__in=spec_instruments)))
 	#import pdb; pdb.set_trace()
 	class Meta:
 		model = TransientSpectrum
 		fields = ('transient','ra',
 				  'dec','spec_phase')#,'obs_group','instrument')
+
+class AutomatedSpectrumRequest(ModelForm):
+
+	spec_instruments = ['FLOYDS-N','FLOYDS-S','Goodman']
+	instrument = forms.ModelChoiceField(Instrument.objects.filter(Q(name__in=spec_instruments)))
+	exp_time = forms.IntegerField(initial=1800) # 1800s seems like a reasonable default
+	spectrum_valid_start = forms.DateTimeField()
+	spectrum_valid_stop = forms.DateTimeField()
+	
+	class Meta:
+		model = TransientFollowup
+		fields =('transient',)
+  

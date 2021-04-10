@@ -13,8 +13,11 @@
 	
 <!-- Content Header (Page header) -->
 {% block content_header %}
-	<h1>
+	<h1>{% if 'YSE' in transient.tags|tags_list or 'YSE Forced Phot' in transient.tags|tags_list %}
+		{{transient.name}}   <b>(YSE)</b><br/>
+		{% else %}
 		{{transient.name}}<br/>
+		{% endif %}
 		<small><a href="{% url 'index' %}">Back</a></small>
 	</h1>
 	<ol class="breadcrumb">
@@ -40,7 +43,11 @@
 					{% if gw_candidate %}
 						<li><a href="#gw_tab" data-toggle="tab" id="gw_tab_header">GW Info</a></li>
 					{% endif %}
-					<li><a href="#comments_tab" data-toggle="tab">Comments</a></li>
+					<li><a href="#comments_tab" data-toggle="tab">Comments
+					{% if new_comment %}
+					(<b>New</b>)
+					{% endif %}
+					</a></li>
 				</ul>
 				<div class="tab-content">
 					<div class="active tab-pane" id="summary_tab">
@@ -65,8 +72,8 @@
 											<div style="margin-top:10px;" class="form-group">
 												<strong>Disc. Date (UTC)</strong>
 												<p class="text-muted">
-													{% if first_magdate %}
-														{{ first_magdate }}
+													{% if transient.disc_date %}
+														{{ transient.disc_date }}
 													{% else %}
 														Unknown
 													{% endif %}
@@ -464,7 +471,7 @@
 											</div>
 											<div class="col-xs-6">
 												<div class="form-group">
-													<a class="btn btn-block btn-primary" href="https://wis-tns.weizmann.ac.il/object/{{ transient.name }}" target="_blank">TNS</a>
+													<a class="btn btn-block btn-primary" href="https://wis-tns.org/object/{{ transient.name }}" target="_blank">TNS</a>
 												</div>
 											</div>
 											<div class="col-xs-6">
@@ -526,7 +533,7 @@
 											<div class="col-xs-12">
 												<div class="col-xs-6">
 													<button style="margin-bottom:5px;" type="button" class="btn btn-default dropdown-toggle" data-toggle="dropdown">
-														Select from {{ all_transient_spectra.count }} Spectra<span class="caret"></span>
+														Show single spectrum<span class="caret"></span>
 													</button>
 													<ul class="dropdown-menu">
 														{% for spec in all_transient_spectra %}
@@ -601,6 +608,24 @@
 								</div>
 								<div class="col-xs-12">
 									<div class="col-xs-6">
+										<div class="box box-default box-solid">
+											<div class="box-header with-border" data-widget="collapse" type="button" class="btn btn-box-tool">
+												<button id="tags_btn" class="btn btn-box-tool" style="height: 30px;"><h3 class="box-title">Apply Tag</h3></button>
+											</div>
+											<div id="external-events" class="box-body">
+												<form id="add_tags_datalist" method="post">
+													<input type="text" list="tags" name="tags_datalist" id="tags_datalist">
+													<datalist id="tags">
+														{% for tag in all_transient_tags %}
+															<option value="{{ tag.name }}" data-tag_id="{{ tag.id }}" tag_color="{{ tag.color.color }}">
+														{% endfor %}
+													</datalist>
+													<input type="submit" class="btn btn-block btn-primary btn-sm" style="width:60%;margin-top:5%;">
+												</form>
+													<!--<div class="followupbox box box-primary collapsed-box">-->
+											</div>
+										</div>
+
 										<div class="box box-default box-solid collapsed-box">
 											<div class="box-header with-border" data-widget="collapse" type="button" class="btn btn-box-tool">
 												<button id="tags_btn" class="btn btn-box-tool" style="height: 30px;"><h3 class="box-title">Available Tags</h3></button>
@@ -608,15 +633,13 @@
 													<button id="tags_btn" class="btn btn-box-tool"><i class="fa fa-plus"></i></button>
 												</div>
 											</div>
-													<div id="external-events" class="box-body collapsed-box">
-													<!--<div class="followupbox box box-primary collapsed-box">-->
-															{% for tag in all_transient_tags %}
-																<div data-tag_id="{{ tag.id }}" class="external-event bg-{{ tag.color }}">{{ tag.name }}</div>
-															{% endfor %}
-													</div>
-												</div>
-												
-
+											<div id="external-events" class="box-body collapsed-box">
+												{% for tag in all_transient_tags %}
+													<div data-tag_id="{{ tag.id }}" class="external-event bg-{{ tag.color }}">{{ tag.name }}</div>
+												{% endfor %}
+											</div>
+										</div>
+										
 												<div class="box box-default box-solid">
 													<div class="box-header with-border">
 														<strong>Create Tag</strong>
@@ -675,6 +698,20 @@
 							</div>
 						</div>
 						<div class="row">
+			                <div class="col-xs-6">
+            			      {% include "YSE_App/form_snippets/classical_resource_form.html" with form=classical_resource_form %}
+			                </div>
+			                <div class="col-xs-6">
+                				{% include "YSE_App/form_snippets/too_resource_form.html" with form=too_resource_form %}
+              				</div>
+						</div>
+						<div class="row">
+							<div class="col-xs-6">
+								<input type="hidden" id="transient_pk" value="{{ transient.id }}"/>
+							    {% include "YSE_App/form_snippets/automated_spectrum_form.html" with form=automated_spectrum_form %}
+							</div>
+						</div>
+						<div class="row">
 							<div id="followup_container">
 								{% for f in followups %}
 									<div class="col-xs-12">
@@ -718,6 +755,7 @@
 																<th>Status</th>
 																<th>Comment</th>
 																<th>Action</th>
+																<th>Delete</th>
 															</tr>
 														</thead>
 														<tbody>
@@ -744,6 +782,7 @@
 																<td>{{ f.status }}</td>
 																<td>{{ f.comment }}</td>
 																<td><a target='_blank' href="{% url 'admin:YSE_App_transientfollowup_change' f.id %}">Edit</a></td>
+																<td><a href="{% url 'delete_followup' f.id %}">Delete</a></td>
 															</tr>
 														</tbody>
 													</table>
@@ -980,6 +1019,7 @@
 							<thead>
 								<tr>
 									<th>Date</th>
+									<th>MJD</th>
 									<th>Mag</th>
 									<th>Mag Error</th>
 									<th>Filter</th>
@@ -991,6 +1031,7 @@
 							{%for allphot in allphotdata%}
 								<tr>
 									<td>{{allphot.obs_date|date:"M d, Y H:i:s"}}</td>
+									<td>{{allphot.date_to_mjd|floatformat:1}}</td>
 									<td>{{allphot.mag}}</td>
 									<td>{{allphot.mag_err}}</td>
 									<td>{{allphot.band.name}}</td>
@@ -1103,14 +1144,82 @@
 
 	<script src="{% static 'YSE_App/bower_components/datatables.net/js/jquery.dataTables.min.js' %}"></script>
 	<script src="{% static 'YSE_App/bower_components/datatables.net-bs/js/dataTables.bootstrap.min.js' %}"></script>
-	<script type="text/javascript" src="https://mpld3.github.io/js/d3.v3.min.js"></script>
-	<script type="text/javascript" src="https://mpld3.github.io/js/mpld3.v0.3.1.dev1.js"></script>
-	<script type="text/javascript" src="https://cdn.pydata.org/bokeh/release/bokeh-1.4.0.min.js"></script>
+	<!--<script type="text/javascript" src="https://mpld3.github.io/js/d3.v3.min.js"></script>
+	<script type="text/javascript" src="https://mpld3.github.io/js/mpld3.v0.3.1.dev1.js"></script>-->
+	<script type="text/javascript" src="{% static 'YSE_App/bokeh-1.4.0.min.js' %}"></script>
 	<script src="{% static 'YSE_App/bower_components/bootstrap-timepicker/js/bootstrap-timepicker.js' %}"></script>
 
 	<script>
 
 		$(function() {
+
+			$('#add_tags_datalist').on('submit', function(event){
+				event.preventDefault();
+				add_tags();
+			});
+
+			// add autocomplete form, no more drag/drop
+			function add_tags(){
+				var tags_list = document.getElementById('tags_datalist');
+				var tag_id = document.querySelector("#tags option[value='"+tags_list.value+"']").getAttribute('data-tag_id')
+  				//var tag_id = tags.value;
+				//alert("Hi!"+tags_list.value);
+				var transient_id = $('#transient_pk').val();
+				//data = (tag_name + "&transient=" + transient_id);
+
+				var base_url = window.location.protocol + "//" + window.location.hostname
+				var port = window.location.port
+				if (port != "") {
+					base_url = base_url + ":" + port
+				}
+
+				var tag_ids = $("#associated-events-list").children("div").map(function() {return $(this).attr("data-tag_id")})
+				if (tag_id in tag_ids){
+					alert("tag has already been applied");
+					return;
+				}
+
+				var tag_urls = []
+				for (i=0; i< tag_ids.length; i++) {
+					tag_urls.push(base_url + "{% url 'transienttag-list' %}" + tag_ids[i] + "/")
+				}
+
+				tag_urls.push(base_url + "{% url 'transienttag-list' %}" + tag_id + "/");
+
+				var transient_target = "{% url 'transient-detail' transient.id %}"
+				var api_url = base_url + transient_target
+
+				var patchData = { "tags": tag_urls }
+				var jsonData = JSON.stringify(patchData)
+
+				// Now, get all associated events and PATCH transient with them
+
+				$.ajax({
+					type: "PATCH",
+					url: api_url,
+					csrfmiddlewaretoken: "{{ csrf_token }}",
+					data: jsonData,
+					contentType: "application/json; charset=utf-8",
+ 					dataType: "json",
+					success: function(data, textStatus, jqXHR) {
+						if (textStatus == "success") {
+							var tags_list = document.getElementById('tags_datalist');
+							//var label = document.querySelector("#tags_datalist option[value='"+tags_list.value+"']").dataset.value;
+							var tag_id = document.querySelector("#tags option[value='"+tags_list.value+"']").getAttribute('data-tag_id');
+							var color = document.querySelector("#tags option[value='"+tags_list.value+"']").getAttribute('tag_color');
+							$("#associated-events-list").append("<div data-tag_id=\""+tag_id+"\" class=\"external-event bg-"+color+"\">"+tags_list.value+"</div>");
+
+						} else {
+							alert("Transient Tag may not have been created -- please use YSE Admin and contact Dave C or David J.")
+						}
+					},
+					error: function(XMLHttpRequest, textStatus, errorThrown) {
+						// alert("Transient Tag may not have been created -- please use YSE Admin and contact Dave C or David J.")
+						alert("Error: " + String(errorThrown) + String(textStatus) + String(XMLHttpRequest.responseText));
+					}
+				});
+			};
+
 
 			// initialize the external events
 			function init_events(ele) {
@@ -1181,6 +1290,8 @@
 
 				}
 			});
+			
+
 			$("#del-associated-event").droppable({
 				drop:function(e,source){
 
@@ -1355,6 +1466,18 @@
 				} 
 			});
 
+
+			$('#automated_spectrum_date_range').daterangepicker({ 
+				timePicker24Hour: true,
+				timePicker: true, 
+				timePickerIncrement: 1, 
+				format: 'MM/DD/YYYY HH:mm', 
+				locale: {
+					format: 'MM/DD/YYYY HH:mm'
+				} 
+			});
+
+
 			//$('#spec_obs_date').datetimepicker({
         	//	format: 'dd/MM/yyyy hh:mm:ss',
 		    //    language: 'pt-BR'
@@ -1401,6 +1524,144 @@
 			// Clear initial value
 			$('#obs_task_actual_picker').val('');
 
+      		// too resource
+		    $('#too_resource_date_range').daterangepicker({ 
+		        timePicker24Hour: true,
+		        timePicker: true, 
+		        timePickerIncrement: 1, 
+		        format: 'YYYY-MM-DD HH:mm', 
+		        locale: {
+		          format: 'YYYY-MM-DD HH:mm'
+		        } 
+		    });
+
+      		// Initialize daterange
+		      fdr_picker = $('#too_resource_date_range').data('daterangepicker')
+		      $('#begin_date_valid').val(fdr_picker.startDate.format("YYYY-MM-DD HH:mm:00"))
+		      $('#end_date_valid').val(fdr_picker.endDate.format("YYYY-MM-DD HH:mm:00"))
+		      $('#too_resource_date_range').on('apply.daterangepicker', function(ev, picker) {
+		        $('#begin_date_valid').val(picker.startDate.format("YYYY-MM-DD HH:mm:00"))
+		        $('#end_date_valid').val(picker.endDate.format("YYYY-MM-DD HH:mm:00"))
+		      });
+
+		    // classical resource
+	        $('#observing_date').datepicker({ 
+      		  timePicker24Hour: true,
+        	  timePicker: true,
+	          timePickerIncrement: 1,
+      	      format: 'mm/dd/yyyy',
+ 	          //todayBtn: "linked",
+      		  locale: {
+		          format: 'mm/dd/yyyy'
+        	  } 
+	        });
+
+      // classical resource
+      $('#add_classical_resource').on('submit', function(event){
+        event.preventDefault();
+        add_classical_resource();
+      });
+
+      function add_classical_resource() {
+        // Grab the form, and associate it with the current transient detail page
+        var data = $('#add_classical_resource').serialize()
+        //var transient_id = $('#transient_pk').val()
+        //data = (data + "&transient=" + transient_id)
+
+        $.ajax({
+          url : "{% url 'add_classical_resource' %}", // the endpoint
+          type : "POST", // http method
+          data : data, // data sent with the post request
+
+          // handle a successful response
+          success : function(json) {
+            
+            // Required fields
+              location.reload();
+          },
+
+          // handle a non-successful response
+          error : function(xhr,errmsg,err) {
+            alert(xhr.status + ": " + xhr.responseText);
+          }
+          });
+        }
+
+// classical resource
+      $('#add_too_resource').on('submit', function(event){
+        event.preventDefault();
+        add_too_resource();
+      });
+
+      function add_too_resource() {
+        // Grab the form, and associate it with the current transient detail page
+        var data = $('#add_too_resource').serialize()
+        //var transient_id = $('#transient_pk').val()
+        //data = (data + "&transient=" + transient_id)
+
+        $.ajax({
+          url : "{% url 'add_too_resource' %}", // the endpoint
+          type : "POST", // http method
+          data : data, // data sent with the post request
+
+          // handle a successful response
+          success : function(json) {
+            
+            // Required fields
+              location.reload();
+          },
+
+          // handle a non-successful response
+          error : function(xhr,errmsg,err) {
+            alert(xhr.status + ": " + xhr.responseText);
+          }
+          });
+        }
+
+      $('#automated_spectrum_request').on('submit', function(event){
+        event.preventDefault();
+        automated_spectrum_request();
+      });
+
+      function automated_spectrum_request() {
+        // Grab the form, and associate it with the current transient detail page
+        var data = $('#automated_spectrum_request').serialize()
+        var transient_id = $('#transient_pk').val()
+        data = (data + "&transient=" + transient_id)
+        //alert(data)
+        $.ajax({
+          url : "{% url 'automated_spectrum_request' %}", // the endpoint
+          type : "POST", // http method
+          data : data, // data sent with the post request
+
+          // handle a successful response
+          success : function(json) {
+            	var errors = json.data["errors"]		
+				// Construct HTML to append container
+						if (errors){
+							alert(errors)
+						} else {
+							location.reload();
+						}
+            // Required fields
+            //  
+          },
+
+          // handle a non-successful response
+          error : function(xhr,errmsg,err) {
+            alert(xhr.status + ": " + xhr.responseText);
+          }
+          });
+        }
+
+        // Initialize daterange
+		fdr_spec_picker = $('#automated_spectrum_date_range').data('daterangepicker')
+		$('#spectrum_valid_start').val(fdr_spec_picker.startDate.format("YYYY-MM-DD HH:mm:00"))
+		$('#spectrum_valid_stop').val(fdr_spec_picker.endDate.format("YYYY-MM-DD HH:mm:00"))
+		$('#automated_spectrum_date_range').on('apply.daterangepicker', function(ev, picker) {
+			$('#spectrum_valid_start').val(picker.startDate.format("YYYY-MM-DD HH:mm:00"))
+			$('#spectrum_valid_stop').val(picker.endDate.format("YYYY-MM-DD HH:mm:00"))
+		});
 			// Initialize date	
 			//date_picker = $('#spec_obs_date').data('datetimepicker')
 			//date_picker.setDate(null)
@@ -1876,7 +2137,7 @@
 							"</div>" + 
 							"<div class='box-body'>" + 
 							"<table id='tbl_followup_" + followup_pk + "' class='table table-bordered table-striped'>" +
-							"<thead><tr><th>Spec. Priority</th><th>Phot. Priority</th><th>Offset Star<br>RA</th><th>Offset Star<br>DEC</th><th>Offset North</th><th>Offset East</th><th>Attached Resource</th><th>Status</th><th>Action</th></tr></thead>" + 
+							"<thead><tr><th>Spec. Priority</th><th>Phot. Priority</th><th>Offset Star<br>RA</th><th>Offset Star<br>DEC</th><th>Offset North</th><th>Offset East</th><th>Attached Resource</th><th>Status</th><th>Comment</th><th>Action</th><th>Delete</th></tr></thead>" + 
 							"<tbody><tr>" + 
 							"<td>" + spec_priority + "</td>" +
 							"<td>" + phot_priority + "</td>" +
@@ -1888,6 +2149,7 @@
 							"<td>" + status_name + "</td>" + 
 							"<td>" + comment + "</td>" +
 							"<td><a target='_blank' href='{% url 'admin:YSE_App_transientfollowup_changelist' %}" + followup_pk + "/change/'>Edit</a></td>" + 
+							"<td><a href='{% url 'delete_followup' -1 %}".replace('-1', followup_pk) + "'>Delete</a></td>" + 
 							"</tr></tbody></table><hr>" + 
 							"<h4 class='box-title'>Observation Tasks</h4>" + 
 							"<table id='tbl_obs_followup_" + followup_pk + "' class='table table-bordered table-striped'>" +

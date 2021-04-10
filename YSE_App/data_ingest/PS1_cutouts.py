@@ -102,7 +102,7 @@ class YSE(CronJobBase):
             print('Entered the PS cutout Cron')        
             #save time b/c the other cron jobs print a time for completion
             
-            transients = (Transient.objects.filter(Q(host__isnull=False) ))# & Q(something that prevents redownloading!)
+            transients = (Transient.objects.filter(Q(host__isnull=False) & Q(host__dec__gt=-31)))# & Q(something that prevents redownloading!)
             #we probably will have to run through the IDs and check what is currently available in th Cutouts folder
                             
             counter = 0 #for local testing don't grab too many or else i'll nuke my computer #!!!
@@ -130,7 +130,11 @@ class YSE(CronJobBase):
                                     x1 = backxx[np.logical_not(array.mask)]  
                                     y1 = backyy[np.logical_not(array.mask)]  
                                     newarr = array[np.logical_not(array.mask)]
-                                    image[:,:,j] = interpolate.griddata((x1, y1), newarr.ravel(), (backxx, backyy), method='cubic')
+                                    try: image[:,:,j] = interpolate.griddata((x1, y1), newarr.ravel(), (backxx, backyy), method='cubic')
+                                    except:
+                                        print('whole image is NaN, this cutout may never work?')
+                                        print('keep track of my error: ', T.name)
+                                        continue
                                     
                         image = (image)/10000.0 #everything in the same range as SDSS
                         image[image>1] = 1 #now max 1 so everything in range -1, 1

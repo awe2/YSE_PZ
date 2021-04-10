@@ -16,10 +16,13 @@ from django.shortcuts import redirect
 from django.db.models import Count, Value, Max, Min
 import zipfile
 from io import BytesIO
-
+from YSE_App.yse_utils.yse_pa import yse_pa
+from django.utils.decorators import method_decorator
 
 from astropy.utils import iers
-iers.conf.auto_download = False
+iers.conf.auto_download = True
+from astropy.utils.iers import conf
+conf.auto_max_age = None
 
 from .models import *
 from .forms import *
@@ -38,6 +41,7 @@ import time
 import dateutil.parser
 from astroplan import moon_illumination
 from astropy.time import Time
+from .common.utilities import getRADecBox
 
 from .table_utils import TransientTable,YSETransientTable,YSEFullTransientTable,YSERisingTransientTable,NewTransientTable,ObsNightFollowupTable,FollowupTable,TransientFilter,FollowupFilter,YSEObsNightTable
 from .queries.yse_python_queries import *
@@ -50,6 +54,7 @@ from django.template import RequestContext
 from urllib.parse import unquote
 
 from .common.utilities import date_to_mjd, mjd_to_date
+from django.views.generic.list import ListView
 
 # Create your views here.
 
@@ -79,7 +84,8 @@ def auth_login(request):
 		if next_page:
 			return HttpResponseRedirect(next_page)
 		else:
-			return render(request,'dashboard')
+			return HttpResponseRedirect('/dashboard/')
+		#render(request,'YSE_App/dashboard.html')
 	else:
 		return render(request, 'YSE_App/login.html')
 
@@ -224,11 +230,11 @@ SELECT pd.mag
    WHERE pd.photometry_id = p.id AND
    YSE_App_transient.id = t.id AND
    pd.id = (
-         SELECT pd2.id FROM YSE_App_transientphotdata pd2, YSE_App_transientphotometry p2
-         WHERE pd2.photometry_id = p2.id AND p2.transient_id = t.id AND ISNULL(pd2.data_quality_id) = True
-         ORDER BY pd2.obs_date DESC
-         LIMIT 1
-     )
+		 SELECT pd2.id FROM YSE_App_transientphotdata pd2, YSE_App_transientphotometry p2
+		 WHERE pd2.photometry_id = p2.id AND p2.transient_id = t.id AND ISNULL(pd2.data_quality_id) = True
+		 ORDER BY pd2.obs_date DESC
+		 LIMIT 1
+	 )
 """
 			if request.GET['sort'] == '-last_mag': is_descending = True
 			else: is_descending = False
@@ -526,18 +532,14 @@ def yse_observing_calendar(request):
 		telescope.elevation*u.m)
 	tel = Observer(location=location, timezone="UTC")
 
-	#import pdb; pdb.set_trace()
 	todaydate = dateutil.parser.parse(datetime.datetime.today().strftime('%Y-%m-%d 00:00:00'))
-	base = todaydate-datetime.timedelta(30)
-	date_list = [base + datetime.timedelta(days=x) for x in range(40)]
+	base = todaydate-datetime.timedelta(30) # hack should be 30!!
+	date_list = [base + datetime.timedelta(days=x) for x in range(40)] # hack should be 40!!
 	obstuple = ()
 	colors = ['#dd4b39', 
 			  '#f39c12', 
 			  '#00c0ef']
 	for i,date in enumerate(date_list):
-		#obs in all_obs:
-		#if obs.mjd_requested: time = Time(mjd_to_date, format='iso')
-		#else:
 
 		time = Time(date_to_mjd(date.strftime('%Y-%m-%d 00:00:00')),format='mjd')
 		
@@ -547,25 +549,78 @@ def yse_observing_calendar(request):
 			Q(mjd_requested__gte = date_to_mjd(sunset_forobs)-0.1) | Q(obs_mjd__gte = date_to_mjd(sunset_forobs)-0.1)).\
 			filter(Q(mjd_requested__lte = date_to_mjd(sunrise_forobs)+0.1) | Q(obs_mjd__lte = date_to_mjd(sunrise_forobs)+0.1))
 		if not len(survey_obs): continue
-		ztf_ids = survey_obs.values_list('survey_field__ztf_field_id',flat=True).distinct()
-
-		ztf_str = ''
-		for z in ztf_ids:
+		ztf_obs_ids = survey_obs.filter(obs_mjd__isnull=False).values_list('survey_field__ztf_field_id',flat=True).distinct()
+		ztf_sched_ids = survey_obs.filter(obs_mjd__isnull=True).values_list('survey_field__ztf_field_id',flat=True).distinct()
+        
+		ztf_obs_str = ''
+		for z in ztf_obs_ids:
 			filters = survey_obs.filter(survey_field__ztf_field_id=z).values_list('photometric_band__name',flat=True).distinct()
-			ztf_str += '%s: %s; '%(z.__str__(),','.join([f.__str__() for f in filters]))
+			ztf_obs_str += '%s: %s; '%(z.__str__(),','.join([f.__str__() for f in filters]))
+		ztf_sched_str = ''
+		for z in ztf_sched_ids:
+			if z in ztf_obs_ids: continue
+			filters = survey_obs.filter(survey_field__ztf_field_id=z).values_list('photometric_band__name',flat=True).distinct()
+			ztf_sched_str += '%s: %s; '%(z.__str__(),','.join([f.__str__() for f in filters]))
 
-		if len(survey_obs):
-			obstuple += ((ztf_str[:-2],date,
-						  '%i%%'%(moon_illumination(time)*100),colors[i%len(colors)]),)
 			
+		if len(survey_obs):
+			obstuple += ((ztf_obs_str[:-2],date,
+						  '%i%%'%(moon_illumination(time)*100),colors[i%len(colors)],ztf_sched_str[:-2]),)
+
+			
+	#important_dates_list = [todaydate-datetime.timedelta(1),
+	#						todaydate,
+	#						todaydate+datetime.timedelta(1)]
+	#important_dates = []
+	#for i,date in enumerate(important_dates_list):
+
+	#	time = Time(date_to_mjd(date.strftime('%Y-%m-%d 00:00:00')),format='mjd')
+		
+	#	sunset_forobs = tel.sun_set_time(time,which="next")
+	#	sunrise_forobs = tel.sun_rise_time(time,which="next")
+	#	survey_obs = SurveyObservation.objects.filter(
+	#		Q(mjd_requested__gte = date_to_mjd(sunset_forobs)-0.1) | Q(obs_mjd__gte = date_to_mjd(sunset_forobs)-0.1)).\
+	#		filter(Q(mjd_requested__lte = date_to_mjd(sunrise_forobs)+0.1) | Q(obs_mjd__lte = date_to_mjd(sunrise_forobs)+0.1))
+	#	if not len(survey_obs): continue
+	#	ztf_ids = survey_obs.values_list('survey_field__ztf_field_id',flat=True).distinct()
+	#	field_ids = survey_obs.values_list('survey_field__field_id',flat=True).distinct()
+
+	#	yse_pas,transients_on_goodcells = [],[]
+	#	for msb_name in ztf_ids:
+	#		so = survey_obs.filter(survey_field__ztf_field_id = msb_name)
+	#		if len(so) and so[0].pos_angle_deg is None:
+	#			pa,tog = yse_pa(msb_name)
+	#		elif len(so):
+	#			pa,tog = None,[]
+	#			pa,tog = yse_pa(msb_name,pa=so[0].pos_angle_deg)
+	#		else:
+	#			pa,tog = None,[]
+	#		yse_pas += [pa]
+	#		transients_on_goodcells += [','.join(tog)]
+	#		if pa is not None:
+	#			 for s in so:
+	#				 if s.pos_angle_deg is None:
+	#					 s.pos_angle_deg = pa
+	#					 s.save()
+			
+	#	date_info = ()
+	#	subfields = [', '.join([f for f in field_ids if f.startswith(z)]) for z in ztf_ids]
+	#	for p,z,f,t in zip(yse_pas,ztf_ids,subfields,transients_on_goodcells):
+	#		date_info += ((date,z,f,p,t),)
+
+	#	important_dates += [date_info]
+		#import pdb; pdb.set_trace()
+
 	context = {
 		'all_obs': obstuple,
 		'utc_time': datetime.datetime.utcnow().isoformat().replace(' ','T'),
+	#	'important_dates': important_dates
 		#'telescope_colors': telescope_colors
 	}
+	#import pdb; pdb.set_trace()
 	return render(request, 'YSE_App/yse_observing_calendar.html', context)
 
-
+@login_required
 def observing_night(request, telescope, obs_date, pi_name):
 
 	# get follow requests for telescope/date
@@ -679,9 +734,18 @@ def download_target_list(request, telescope, obs_date):
 	
 	content = "!Data {name %20} ra_h ra_m ra_s dec_d dec_m dec_s equinox {comment *}\n"
 	for f in follow_requests:
-		content += "%s	%s %s 2000 mag = %.2f\n"%(
-			f.transient.name.ljust(20),f.transient.CoordString()[0].replace(':',' '),f.transient.CoordString()[1].replace(':',' '),float(f.transient.recent_mag()))
-				
+		comments = ';'.join([l.comment for l in Log.objects.filter(transient_followup=f)])
+		if f.transient.recent_mag():
+			#import pdb; pdb.set_trace()
+			content += "%s	%s %s 2000 mag = %.2f comment = %s\n"%(
+				f.transient.name.ljust(20),f.transient.CoordString()[0].replace(':',' '),
+                f.transient.CoordString()[1].replace(':',' '),float(f.transient.recent_mag()),comments)
+
+		else:
+			content += "%s	%s %s 2000 comment = %s\n"%(
+				f.transient.name.ljust(20),f.transient.CoordString()[0].replace(':',' '),
+                f.transient.CoordString()[1].replace(':',' '),comments)
+			
 	response = HttpResponse(content, content_type='text/plain')
 	response['Content-Disposition'] = 'attachment; filename=%s' % '%s_%s.txt'%(telescope,obs_date)
 
@@ -723,6 +787,10 @@ def download_targets_and_finders(request, telescope, obs_date):
 @login_required
 def transient_detail(request, slug):
 
+	classical_resource_form = ClassicalResourceForm()
+	too_resource_form = ToOResourceForm()
+	automated_spectrum_form = AutomatedSpectrumRequest()
+	
 	transient = Transient.objects.filter(slug=slug)
 	alternate_transient = AlternateTransientNames.objects.filter(slug=slug)
 	if len(alternate_transient) and not len(transient):
@@ -807,6 +875,9 @@ def transient_detail(request, slug):
 		#import pdb
 		#pdb.set_trace()
 
+		has_new_comment = len(Log.objects.filter(transient=transient_obj).\
+							  filter(modified_date__gt=datetime.datetime.now()-datetime.timedelta(1))) > 0
+		
 		# obsnights,tellist = view_utils.getObsNights(transient[0])
 		# too_resources = ToOResource.objects.all()
 		#
@@ -846,7 +917,10 @@ def transient_detail(request, slug):
 			'gw_candidate':gwcand,
 			'gw_images':gwimages,
 			'spectrum_upload_form':spectrum_upload_form,
-			'diff_images':TransientDiffImage.objects.filter(phot_data__photometry__transient__name=transient_obj.name)
+			'diff_images':TransientDiffImage.objects.filter(phot_data__photometry__transient__name=transient_obj.name),
+			'classical_resource_form':classical_resource_form,
+			'too_resource_form':too_resource_form,
+			'new_comment':has_new_comment
 		}
 
 		if transient_followup_form.fields["valid_start"].initial:
@@ -864,6 +938,12 @@ def transient_detail(request, slug):
 			context['allphotdata']=allphotdata
 		if transient_obj.postage_stamp_file:
 			context['qub_candidate'] = transient_obj.postage_stamp_file.split('/')[-1].split('_')[0]
+
+		#if automated_spectrum_form.fields["valid_start"].initial:
+		#	context['automated_spectrum_initial_dates'] = \
+		#		(automated_spectrum_form.fields["valid_start"].initial.strftime('%m/%d/%Y HH:MM'),
+		#		 automated_spectrum_form.fields["valid_stop"].initial.strftime('%m/%d/%Y HH:MM'))
+		context['automated_spectrum_form'] = automated_spectrum_form
 			
 		return render(request,
 			'YSE_App/transient_detail.html',
@@ -963,8 +1043,8 @@ def download_photometry(request, slug):
 			content += "# %s: %s\n"%(k.upper(),data[transient[0].name]['transient'][0]['fields'][k])
 			
 	content += "\n"
-	content += "VARLIST:  MJD        FLT  FLUXCAL   FLUXCALERR    MAG     MAGERR     MAGSYS   TELESCOPE    INSTRUMENT\n"
-	linefmt =  "OBS:      %.3f  %s  %.3f  %.3f  %.3f  %.3f  %s  %s  %s\n"
+	content += "VARLIST:  MJD		 FLT  FLUXCAL	FLUXCALERR	  MAG	  MAGERR	 MAGSYS	  TELESCOPE	   INSTRUMENT\n"
+	linefmt =  "OBS:	  %.3f	%s	%.3f  %.3f	%.3f  %.3f	%s	%s	%s\n"
 
 	
 	# Get photometry by user & transient
@@ -1178,6 +1258,7 @@ def download_spectra(request, slug):
 @csrf_exempt
 @login_or_basic_auth_required
 def upload_spectrum(request):
+
 	if request.method == 'POST':
 		form = SpectrumUploadForm(request.POST, request.FILES)
 		if form.is_valid():
@@ -1213,28 +1294,42 @@ def upload_spectrum(request):
 			
 			existingspec = TransientSpecData.objects.filter(spectrum=tspec)
 			if len(existingspec):
-				for e in existingspec: e.delete()
+				existingspec.delete()
 
+
+			td = []
 			for line in request.FILES['filename']:
 				line = line.decode('utf-8').replace('\n','')
 				if line.startswith('#'): continue
 				if len(line.split()) == 3:
 					wavelength,flux,flux_err = line.split()
 					wavelength,flux,flux_err = float(wavelength),float(flux),float(flux_err)
-					td = TransientSpecData.objects.create(
+					td += [TransientSpecData(
 						spectrum=tspec,wavelength=wavelength,flux=flux,flux_err=flux_err,
-						created_by=request.user,modified_by=request.user)
-					td.save()
+						created_by=request.user,modified_by=request.user)]
 				elif len(line.split()) == 2:
 					wavelength,flux = line.split()
 					wavelength,flux = float(wavelength),float(flux)
-					td = TransientSpecData.objects.create(
+					td += [TransientSpecData(
+						spectrum=tspec,wavelength=wavelength,flux=flux,
+						created_by=request.user,modified_by=request.user)]
+				elif len(line.split(',')) == 3:
+					wavelength,flux,flux_err = line.split(',')
+					wavelength,flux,flux_err = float(wavelength),float(flux),float(flux_err)
+					td += [TransientSpecData(
+						spectrum=tspec,wavelength=wavelength,flux=flux,flux_err=flux_err,
+						created_by=request.user,modified_by=request.user)]
+				elif len(line.split(',')) == 2:
+					wavelength,flux = line.split(',')
+					wavelength,flux = float(wavelength),float(flux)
+					td += TransientSpecData(
 						spectrum=tspec,wavelength=wavelength,flux=flux,
 						created_by=request.user,modified_by=request.user)
-					td.save()
 				else:
 					raise RuntimeError('bad input')
-			
+
+			TransientSpecData.objects.bulk_create(td)
+				
 			return redirect('transient_detail', slug=transient.slug) #HttpResponseRedirect(reverse_lazy('transient_detail',transient.slug))
 	else:
 		form = SpectrumUploadForm()
@@ -1262,3 +1357,56 @@ def change_status_for_query(request, query_id, status_id):
 		t.save()
 
 	return redirect('personaldashboard')
+
+@login_required
+def delete_followup(request,followup_id):
+	followup = get_object_or_404(TransientFollowup,pk=followup_id)
+	slug = followup.transient.slug
+	followup.delete()
+	return HttpResponseRedirect(reverse_lazy('transient_detail',kwargs={'slug':slug}))
+	
+@method_decorator(login_required, name='dispatch')
+class SearchResultsView(ListView):
+	model = Transient
+	template_name = 'YSE_App/search_results.html'
+
+	def get_context_data(self):
+		query = self.request.GET.get('q')
+
+		transients = None
+		# a few use cases
+		# if there's a gap or a comma in the middle, assume RA/Dec
+		size = 5/3600. # box size
+		if ',' in query or len(query.split()) > 1:
+			if ',' in query:
+				if len(query.split(',')) == 2:
+					ra,dec = query.split(',')
+				elif len(query.split(',')) == 3:
+					ra,dec,size = query.split(',')
+			else:
+				if len(query.split()) == 2:
+					ra,dec = query.split()
+				elif len(query.split()) == 3:
+					ra,dec,size = query.split()
+			try:
+				ra,dec = float(ra),float(dec)
+				decimal = True
+			except:
+				sc = SkyCoord(ra,dec,unit=(u.hour,u.deg))
+				ra,dec = sc.ra.deg,sc.dec.deg
+				decimal = False
+
+			ramin,ramax,decmin,decmax = getRADecBox(ra,dec,size=float(size))
+			transients = Transient.objects.filter(Q(ra__gt=ramin) & Q(ra__lt=ramax) & Q(dec__gt=decmin) & Q(dec__lt=decmax))
+				
+		if transients is None:
+			# otherwise execute a simple search on name
+			transients = Transient.objects.filter(name__icontains=query)
+		
+		context = super().get_context_data()
+		transientfilter = TransientFilter(self.request.GET, queryset=transients,prefix='')
+		table = TransientTable(transientfilter.qs,prefix='')
+		RequestConfig(self.request, paginate={'per_page': 10}).configure(table)
+		context['transient_search_results'] = (table,'Search Results','Search Results',transientfilter)
+
+		return context

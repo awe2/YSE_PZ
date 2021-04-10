@@ -11,8 +11,10 @@ from django.urls import path, re_path, include
 from . import views, view_utils, data_utils, table_utils, yse_views
 from . import api_views
 from .form_views import *
+from .yse_utils.yse_forms import MoveYSEFormView
 from . import surveypages
 from YSE_App.yse_utils import yse_pointings, yse_view_utils
+from YSE_App.views import SearchResultsView
 
 schema_view = get_schema_view(title='Young Supernova Experiment (YSE) API')
 
@@ -34,18 +36,24 @@ urlpatterns = [
     url(r'^news/$', surveypages.news, name='news'),
     url(r'^team/$', surveypages.team, name='team'),
     url(r'^contact/$', surveypages.contact, name='contact'),
-
+    url(r'^acknowledgements/$', surveypages.acknowledgements, name='acknowledgements'),
+    
     url(r'^dashboard_example/$', views.dashboard_example, name='dashboard_example'),
     url(r'^transient_edit/$', views.transient_edit, name='transient_edit'),
     url(r'^transient_edit/(?P<transient_id>[0-9]+)/$', views.transient_edit, name='transient_edit'),
-    url(r'^transient_detail/(?P<slug>[a-zA-Z0-9_-]+)/$', views.transient_detail, name='transient_detail'),
+    url(r'^transient_detail/(?P<slug>.*)/$', views.transient_detail, name='transient_detail'),
     url(r'^transient_summary/(?P<status_or_query_name>.*)/$', views.transient_summary, name='transient_summary'),
 
     url(r'^observing_calendar/$', views.observing_calendar, name='observing_calendar'),
     url(r'^yse_observing_calendar/$', views.yse_observing_calendar, name='yse_observing_calendar'),
     url(r'^yse_planning/$', yse_views.yse_planning, name='yse_planning'),
+    url(r'^yse_fields/(?P<ra_min_hour>.*)/(?P<ra_max_hour>.*)/(?P<min_mag>.*)/$', yse_views.yse_fields, name='yse_fields'),
     url(r'^yse_sky/$', yse_views.yse_sky, name='yse_sky'),
+    url(r'^select_yse_fields/$', yse_views.select_yse_fields, name='select_yse_fields'),
+	url(r'^move_yse_field/$', MoveYSEFormView.as_view(), name='move_yse_field'),
+	url(r'^return_serialized_transients/$', yse_views.return_serialized_transients, name='return_serialized_transients'),
     url(r'^msb_detail/(?P<msb>.*)$', yse_views.msb_detail, name='msb_detail'),
+    url(r'^delete_followup/(?P<followup_id>[0-9_-]+)/$', views.delete_followup, name='delete_followup'),
 
     re_path(r'^toggleTargetField/$', yse_view_utils.toggle_field, name='toggle_field'),
 	re_path(r'^toggleFieldSet/$', yse_view_utils.toggle_fieldset, name='toggle_fieldset'),
@@ -71,11 +79,12 @@ urlpatterns = [
     url(r'^yse_observing_night/(?P<obs_date>[a-zA-Z0-9_-]+)/$', views.yse_observing_night, name='yse_observing_night'),
     url(r'^view_yse_fields/$', view_utils.view_yse_fields, name='view_yse_fields'),
 	
-	url(r'^get_transient/(?P<slug>[a-zA-Z0-9_-]+)/$', data_utils.get_transient, name='get_transient'),
+	url(r'^get_transient/(?P<slug>.*)/$', data_utils.get_transient, name='get_transient'),
 	url(r'^get_rising_transients/(?P<ndays>[a-zA-Z0-9_-]+)/$', data_utils.get_rising_transients, name='get_rising_transients'),
 	url(r'^add_transient/', data_utils.add_transient, name='add_transient'),
 	url(r'^add_yse_survey_obs/', data_utils.add_yse_survey_obs, name='add_yse_survey_obs'),
 	url(r'^add_yse_survey_fields/', data_utils.add_yse_survey_fields, name='add_yse_survey_fields'),
+
 	url(r'^add_gw_candidate/', data_utils.add_gw_candidate, name='add_gw_candidate'),
 	url(r'^add_transient_phot/', data_utils.add_transient_phot, name='add_transient_phot'),
 	url(r'^add_transient_spec/', data_utils.add_transient_spec, name='add_transient_spec'),
@@ -86,12 +95,15 @@ urlpatterns = [
 		data_utils.get_new_transients_box, name='get_new_transients_box'),
 	url(r'^box_search/(?P<ra>\d+\.\d+)/(?P<dec>[+-]?\d+\.\d+)/(?P<radius>\d+\.?\d*)/$', 
 		data_utils.box_search, name='box_search'),
+	url(r'^search/$', 
+		SearchResultsView.as_view(), name='search'),
+
 	url(r'^query_api/(?P<query_name>.*)/$',data_utils.query_api, name='query_api'),
 	url(r'^change_status_for_query/(?P<query_id>[a-zA-Z0-9_-]+)/(?P<status_id>[a-zA-Z0-9_-]+)$', 
 		views.change_status_for_query, name='change_status_for_query'),
-	url(r'^download_data/(?P<slug>[a-zA-Z0-9_-]+)/$', views.download_data, name='download_data'),
-	url(r'^download_spectra/(?P<slug>[a-zA-Z0-9_-]+)/$', views.download_spectra, name='download_spectra'),
-	url(r'^download_photometry/(?P<slug>[a-zA-Z0-9_-]+)/$', views.download_photometry, name='download_photometry'),
+	url(r'^download_data/(?P<slug>.*)/$', views.download_data, name='download_data'),
+	url(r'^download_spectra/(?P<slug>.*)/$', views.download_spectra, name='download_spectra'),
+	url(r'^download_photometry/(?P<slug>.*)/$', views.download_photometry, name='download_photometry'),
 	url(r'^download_bulk_photometry/(?P<query_title>[a-zA-Z0-9_-]+)/$', views.download_bulk_photometry, name='download_bulk_photometry'),
 	url(r'^download_target_list/(?P<telescope>[a-zA-Z0-9_-]+)/(?P<obs_date>[a-zA-Z0-9_-]+)/$', views.download_target_list, name='download_target_list'),
 	url(r'^download_targets_and_finders/(?P<telescope>[a-zA-Z0-9_-]+)/(?P<obs_date>[a-zA-Z0-9_-]+)/$', views.download_targets_and_finders, name='download_targets_and_finders'),
@@ -107,6 +119,7 @@ urlpatterns = [
     url(r'^salt2plot/(?P<transient_id>[0-9]+)/(?P<salt2fit>[0-1]+)/$', view_utils.salt2plot, name='salt2plot'),
     url(r'^salt2fluxplot/(?P<transient_id>[0-9]+)/(?P<salt2fit>[0-1]+)/$', view_utils.salt2fluxplot, name='salt2fluxplot'),
     url(r'^spectrumplot/(?P<transient_id>[0-9]+)/$', view_utils.spectrumplot, name='spectrumplot'),
+    url(r'^spectrumplot_summary/(?P<transient_id>[0-9]+)/$', view_utils.spectrumplot_summary, name='spectrumplot_summary'),
     url(r'^spectrumplotsingle/(?P<transient_id>[a-zA-Z0-9_-]+)/(?P<spec_id>[a-zA-Z0-9_-]+)/$', view_utils.spectrumplotsingle, name='spectrumplotsingle'),
 	url(r'^finderchart/(?P<transient_id>[0-9]+)/$', view_utils.finder().finderchart, name='finderchart'),
 	url(r'^finderim/(?P<transient_id>[0-9]+)/$', view_utils.finder().finderim, name='finderim'),
@@ -114,6 +127,7 @@ urlpatterns = [
 	url(r'^add_transient_followup/', AddTransientFollowupFormView.as_view(), name='add_transient_followup'),
 	url(r'^add_classical_resource/', AddClassicalResourceFormView.as_view(), name='add_classical_resource'),
 	url(r'^add_too_resource/', AddToOResourceFormView.as_view(), name='add_too_resource'),
+	url(r'^automated_spectrum_request/', AddAutomatedSpectrumRequestFormView.as_view(), name='automated_spectrum_request'),
     url(r'^add_transient_observation_task/', AddTransientObservationTaskFormView.as_view(), name='add_transient_observation_task'),
 	url(r'^add_survey_field/', AddSurveyFieldFormView.as_view(), name='add_survey_field'),
 	url(r'^add_survey_obs/', AddSurveyObsFormView.as_view(), name='add_survey_obs'),
@@ -187,6 +201,7 @@ router.register(r'observatories', api_views.ObservatoryViewSet)
 router.register(r'oncalldates', api_views.OnCallDateViewSet)
 
 router.register(r'surveyfields', api_views.SurveyFieldViewSet)
+router.register(r'surveyfieldmsbs', api_views.SurveyFieldMSBViewSet)
 router.register(r'surveyobservations', api_views.SurveyObservationViewSet)
 
 router.register(r'transientphotometry', api_views.TransientPhotometryViewSet, base_name='transientphotometry')

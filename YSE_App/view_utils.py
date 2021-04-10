@@ -38,8 +38,9 @@ import django
 import datetime
 from astroplan.plots import plot_airmass
 from astropy.utils import iers
-iers.conf.auto_download = False
+iers.conf.auto_download = True
 from astropy.cosmology import FlatLambdaCDM
+from bokeh.models import Legend
 cosmo = FlatLambdaCDM(70,0.3)
 
 import matplotlib
@@ -50,10 +51,14 @@ from matplotlib.figure import Figure
 from matplotlib.dates import DateFormatter
 from matplotlib import rcParams
 import healpy as hp
+import itertools
+from bokeh.palettes import Dark2_5 as palette
 
 from django.db import connection, reset_queries
 import time
 import functools
+import signal
+from multiprocessing import Process
 
 def query_debugger(func):
 
@@ -716,7 +721,7 @@ def lightcurveplot_summary(request, transient_id, salt2=False):
 	vline = Span(location=today, dimension='height', line_color='black',
 				 line_width=3)
 	ax.add_layout(vline)
-	from bokeh.models import Legend
+
 	legend = Legend(items=legend_it, location="center")
 	legend.click_policy="mute"
 	legend.label_height = 1
@@ -839,99 +844,45 @@ def lightcurveplot_detail(request, transient_id, salt2=False):
 	transient = Transient.objects.get(pk=transient_id)
 	photdata = get_all_phot_for_transient(request.user, transient_id).all().select_related(
 		'created_by', 'modified_by', 'band', 'unit', 'data_quality', 'photometry',
-		'band__instrument','band__instrument__telescope')
+		'band__instrument','band__instrument__telescope').order_by('-modified_date')
 	if not photdata:
 		return django.http.HttpResponse('')
 	
-	mjd,salt2mjd,date,mag,magerr,flux,fluxerr,zpsys,salt2band,band,bandstr,bandcolor,bandsym,data_quality,magsys = \
+	mjd,salt2mjd,salt2flux,salt2fluxerr,date,mag,magerr,flux,fluxerr,zpsys,salt2band,band,bandstr,bandcolor,bandsym,data_quality,magsys = \
 		np.array([]),np.array([]),np.array([]),np.array([]),np.array([]),\
 		np.array([]),np.array([]),np.array([]),np.array([]),np.array([]),\
-		np.array([]),np.array([]),np.array([]),np.array([]),np.array([])
+		np.array([]),np.array([]),np.array([]),np.array([]),np.array([]),\
+		np.array([]),np.array([])
 	upperlimmjd,upperlimdate,upperlimmag,upperlimband,upperlimbandstr,upperlimbandcolor,upperlimdataquality,upperlimmagsys = \
 		np.array([]),np.array([]),np.array([]),np.array([]),np.array([]),np.array([]),np.array([]),np.array([])
 	limmjd = None
 
-	for p in photdata:
-		#dbflux,dbfluxerr,dbobsdate,dbmag,dbmagerr,dbdata_quality,dbdiscovery_point = \
-		#	p.flux,p.flux_err,p.obs_date,p.mag,p.mag_err,p.data_quality,p.discovery_point
-		dbmjd = date_to_mjd(p.obs_date)
-		if p.flux and np.abs(p.flux) > 1e10: continue
-		#if p.data_quality:
-		#	continue			
+	salt2bandpasses = np.array(bandpassdict.keys())
 
-		if (p.flux and p.mag and p.flux_err and p.flux/p.flux_err > 3) or (not p.flux and p.mag):
-			if p.discovery_point:
-				limmjd = dbmjd-30
-				
-			mjd = np.append(mjd,[dbmjd])
-			date = np.append(date,[p.obs_date.strftime('%m/%d/%Y')])
-			mag = np.append(mag,[p.mag])
-			if p.data_quality is None: data_quality = np.append(data_quality,['Good'])
-			else: data_quality = np.append(data_quality,[p.data_quality.name])
-			if p.mag_sys is None: magsys = np.append(magsys,['None'])
-			else: magsys = np.append(magsys,[p.mag_sys])
+	tstart = time.time()
+	fluxes = np.array(photdata.values_list('flux',flat=True))
+	flux_errs = np.array(photdata.values_list('flux_err',flat=True))
+	flux_zpts = np.array(photdata.values_list('flux_zero_point',flat=True))
+	flux_zpts[flux_zpts == None] = 27.5
+	mags = np.array(photdata.values_list('mag',flat=True))
+	mag_errs = np.array(photdata.values_list('mag_err',flat=True))
+	disc_points = np.array(photdata.values_list('discovery_point',flat=True))
+	obs_dates = np.array(photdata.values_list('obs_date',flat=True))
+	obs_dates_str = np.array([p.strftime('%m/%d/%Y') for p in photdata.values_list('obs_date',flat=True)])
+	mjds = date_to_mjd(obs_dates)
+	data_quality = np.array(['Good' if p is None else p for p in photdata.values_list('data_quality__name',flat=True)])
+	mag_sys = np.array(['None' if p is None else p for p in photdata.values_list('mag_sys__name',flat=True)])
+	band = np.array(photdata.values_list('band',flat=True))
+	band_name = np.array([PhotometricBand.objects.get(pk=b).name for b in band])
+	instrument_name = np.array([PhotometricBand.objects.get(pk=b).instrument.name for b in band])
+	#band_name = np.array(photdata.values_list('band__name',flat=True))
+	#instrument_name = np.array(photdata.values_list('band__instrument__name',flat=True))
+	disp_symbol = np.array([PhotometricBand.objects.get(pk=b).disp_symbol for b in band])
+	disp_color = np.array([PhotometricBand.objects.get(pk=b).disp_color for b in band])
+	mag_errs_tmp = mag_errs
+	mag_errs_tmp[mag_errs == None] = 0.01
 
-			if p.mag_err: magerr = np.append(magerr,p.mag_err)
-			else: magerr = np.append(magerr,0)
-			bandstr = np.append(bandstr,str(p.band))
-			bandcolor = np.append(bandcolor,str(p.band.disp_color))
-			if p.band.disp_symbol in py2bokeh_symboldict.keys():
-				bandsym = np.append(bandsym,str(py2bokeh_symboldict[p.band.disp_symbol]))
-			else:
-				bandsym = np.append(bandsym,str(p.band.disp_symbol))
-			band = np.append(band,p.band)
-			if salt2:
-				if str(p.band) in bandpassdict.keys():
-					if p.mag_err: mag_err = p.mag_err
-					else: mag_err = 0.02
-					salt2mjd = np.append(salt2mjd,[dbmjd])
-					flux = np.append(flux,10**(-0.4*(p.mag-27.5)))
-					fluxerr = np.append(fluxerr,p.mag*mag_err*0.4*np.log(10))
-					salt2band = np.append(salt2band,bandpassdict[str(p.band)])
-					if 'bessell' in bandpassdict[str(p.band)]: zpsys = np.append(zpsys,'Vega')
-					else: zpsys = np.append(zpsys,'AB')
-				
-		elif p.flux and p.flux_zero_point and p.flux + 3*p.flux_err > 0:
-			upperlimmjd = np.append(upperlimmjd,[dbmjd])
-			upperlimdate = np.append(upperlimdate,[p.obs_date.strftime('%m/%d/%Y')])
-			upperlimmag = np.append(upperlimmag,[-2.5*np.log10(p.flux + 3*p.flux_err) + p.flux_zero_point])
-			upperlimbandstr = np.append(upperlimbandstr,str(p.band))
-			upperlimband = np.append(upperlimband,p.band)
-			upperlimbandcolor = np.append(upperlimbandcolor,p.band.disp_color)
-			if p.mag_sys is None: upperlimmagsys = np.append(upperlimmagsys,'None')
-			else: upperlimmagsys = np.append(upperlimmagsys,p.mag_sys)
-			if p.data_quality is None: upperlimdataquality = np.append(upperlimdataquality,['Good'])
-			else: upperlimdataquality = np.append(upperlimdataquality,[p.data_quality.name])
-			if salt2:
-				if str(p.band) in bandpassdict.keys():
-					salt2mjd = np.append(salt2mjd,[dbmjd])
-					flux = np.append(flux,p.flux)
-					fluxerr = np.append(fluxerr,p.flux_err)
-					salt2band = np.append(salt2band,bandpassdict[str(p.band)])
-					if 'bessell' in bandpassdict[str(p.band)]: zpsys = np.append(zpsys,'Vega')
-					else: zpsys = np.append(zpsys,'AB')
-
-	if transient.non_detect_limit and transient.non_detect_band:
-		upperlimmjd = np.append(upperlimmjd,[date_to_mjd(transient.non_detect_date)])
-		upperlimdate = np.append(upperlimdate,[transient.non_detect_date.strftime('%m/%d/%Y')])
-		upperlimmag = np.append(upperlimmag,transient.non_detect_limit)
-		upperlimbandstr = np.append(upperlimbandstr,str(transient.non_detect_band))
-		upperlimband = np.append(upperlimband,transient.non_detect_band)
-		upperlimbandcolor = np.append(upperlimbandcolor,transient.non_detect_band.disp_color)
-		upperlimdataquality = np.append(upperlimdataquality,'Good')
-		upperlimmagsys = np.append(upperlimmagsys,'None')
-		
-	#ax.title.text = "%s"%transient.name
-	#colorlist = ['#1f77b4','#ff7f0e','#2ca02c','#d62728',
-	#			 '#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf']
 	colorlist = ['#8dd3c7','#bebada','#fb8072','#80b1d3','#fdb462','#b3de69','#fccde5','#d9d9d9']
-	count = 0
-	allband = np.append(band,upperlimband)
-	allbandstr = np.append(bandstr,upperlimbandstr)
-	allbandcolor = np.append(bandcolor,upperlimbandcolor)
-	allbandsym = np.append(bandsym,[None]*len(upperlimbandcolor))
-	bandunq,idx = np.unique(allbandstr,return_index=True)
-
 	TOOLTIPS = [
 		('mag','$y'),
 		('band','@band'),
@@ -939,10 +890,12 @@ def lightcurveplot_detail(request, transient_id, salt2=False):
 		('dq','@data_quality'),
 		('magsys','@magsys')]
 	ax=figure(plot_width=240,plot_height=240,sizing_mode='scale_width')#,tooltips=TOOLTIPS)#'stretch_both')
-
-	
+	bandunq,idx = np.unique(band,return_index=True)
+	count = 0
 	legend_it = []
-	for bs,b,bc,bsym in zip(bandunq,allband[idx],allbandcolor[idx],allbandsym[idx]):
+	upperlimmag,upperlimmjd = np.array([]),np.array([])
+	for bs,bn,b,bc,bsym,inn in zip(
+			bandunq,band_name[idx],band[idx],disp_color[idx],disp_symbol[idx],instrument_name[idx]):
 		if bc != 'None' and bc: color = bc
 		else:
 			coloridx = count % len(np.unique(colorlist))
@@ -958,91 +911,104 @@ def lightcurveplot_detail(request, transient_id, salt2=False):
 			plotmethod = getattr(ax, 'triangle')
 		if bsym != 'asterisk': size=7
 		else: size=20
-			
-		source = ColumnDataSource(data=dict(x=mjd[bandstr == bs].tolist(),
-											y=mag[bandstr == bs].tolist(),
-											date=date[bandstr == bs].tolist(),
-											data_quality=data_quality[bandstr == bs].tolist(),
-											magsys=magsys[bandstr == bs].tolist(),
-											band=[bs.replace('Band: ','')]*len(mjd[bandstr == bs].tolist())))
 
-		p = plotmethod('x','y',source=source, #mjd[bandstr == bs].tolist(),mag[bandstr == bs].tolist(),
-				   color=color,size=size, muted_alpha=0.2)#,legend='%s - %s'%(
-					   #b.instrument.telescope.name,b.name))
+		if salt2:
+			bandkey = 'Band: %s - %s'%(inn,bn)
+			if bandkey in bandpassdict.keys():
+				iBand = (band_name == bn) & (mags != None)
+				salt2mag_errs = mag_errs[iBand]
+				salt2mag_errs[(salt2mag_errs < 0.01) | (salt2mag_errs == None)] = 0.01
+				salt2mjd = np.append(salt2mjd,mjds[iBand])
+				salt2flux = np.append(salt2flux,10**(-0.4*(mags[iBand]-27.5)))
+				salt2fluxerr = np.append(salt2fluxerr,mags[iBand]*salt2mag_errs*0.4*np.log(10))
+				salt2band = np.append(salt2band,[bandpassdict[bandkey]]*len(salt2mag_errs))
+				if 'bessell' in bandpassdict[bandkey]: zpsys = np.append(zpsys,['Vega']*len(mag_errs[iBand]))
+				else: zpsys = np.append(zpsys,['AB']*len(mag_errs[iBand]))
+
+		iPlot = (band_name == bn) & (instrument_name == inn) & (mags != None) & \
+				(mag_errs != None) & ((mag_errs_tmp <= 0.36) | (fluxes == None) | (flux_errs == None))
+		iPlotUlimFlux = (band_name == bn) & (instrument_name == inn) & (fluxes != None) & (flux_errs != None) & (flux_errs != 0)
+		iPlotUlimFlux2 = fluxes[iPlotUlimFlux]/flux_errs[iPlotUlimFlux] < 3
+		mags_ulim = -2.5*np.log10((fluxes[iPlotUlimFlux][iPlotUlimFlux2] + \
+			3*flux_errs[iPlotUlimFlux][iPlotUlimFlux2]).astype(float)) + flux_zpts[iPlotUlimFlux][iPlotUlimFlux2]
+		upperlimmag = np.append(upperlimmag,mags_ulim)
+		upperlimmjd = np.append(upperlimmjd,mjds[iPlotUlimFlux][iPlotUlimFlux2].tolist())
+		iPlotUlimFlux3 = mags_ulim == mags_ulim
+		upperlimmag = np.append(upperlimmag,mags_ulim[iPlotUlimFlux3])
+		upperlimmjd = np.append(upperlimmjd,mjds[iPlotUlimFlux][iPlotUlimFlux2][iPlotUlimFlux3].tolist())
+        
+        
+		source = ColumnDataSource(data=dict(x=mjds[iPlot].tolist(),
+											y=mags[iPlot].tolist(),
+											date=obs_dates_str[iPlot].tolist(),
+											data_quality=data_quality[iPlot].tolist(),
+											magsys=mag_sys[iPlot].tolist(),
+											band=['%s - %s'%(inn,bn)]*len(mjds[iPlot].tolist())))
+            
+		p = plotmethod('x','y',source=source,
+				   color=color,size=size, muted_alpha=0.2)
 		g1_hover = HoverTool(renderers=[p],
 							 tooltips=TOOLTIPS,toggleable=False)
 		ax.add_tools(g1_hover)
 
-		#legend_it.append(('%s - %s'%(b.instrument.telescope.name,b.name), [p]))
-		if len(upperlimbandstr) and len(upperlimmjd[upperlimbandstr == bs]):
-			source = ColumnDataSource(data=dict(x=upperlimmjd[upperlimbandstr == bs].tolist(),
-												y=upperlimmag[upperlimbandstr == bs].tolist(),
-												date=upperlimdate[upperlimbandstr == bs].tolist(),
-												data_quality=upperlimdataquality[upperlimbandstr == bs].tolist(),
-												magsys=upperlimmagsys[upperlimbandstr == bs].tolist(),
-												band=[bs.replace('Band: ','')]*len(upperlimmjd[upperlimbandstr == bs].tolist())))
-			p = ax.inverted_triangle('x','y',source=source,
-									 color=color,size=5,muted_alpha=0.2)
-			g1_hover = HoverTool(renderers=[p],
-								 tooltips=TOOLTIPS,toggleable=False)
-			ax.add_tools(g1_hover)
+		source = ColumnDataSource(data=dict(x=mjds[iPlotUlimFlux][iPlotUlimFlux2].tolist(),
+											y=mags_ulim.tolist(), #[iPlotUlim].tolist(),
+											date=obs_dates_str[iPlotUlimFlux][iPlotUlimFlux2].tolist(),
+											data_quality=data_quality[iPlotUlimFlux][iPlotUlimFlux2].tolist(),
+											magsys=mag_sys[iPlotUlimFlux][iPlotUlimFlux2].tolist(),
+											band=['%s - %s'%(inn,bn)]*len(mjds[iPlotUlimFlux][iPlotUlimFlux2].tolist())))
 
-			#,legend='%s - %s'%(b.instrument.telescope.name,b.name)
-			
+		p = ax.inverted_triangle('x','y',source=source,
+								 color=color,size=5,muted_alpha=0.2)
+		g1_hover = HoverTool(renderers=[p],
+							 tooltips=TOOLTIPS,toggleable=False)
+		ax.add_tools(g1_hover)
 		err_xs,err_ys = [],[]
-		for x,y,yerr in zip(mjd[bandstr == bs].tolist(),mag[bandstr == bs].tolist(),magerr[bandstr == bs].tolist()):
+		for x,y,yerr in zip(mjds[iPlot].tolist(),mags[iPlot].tolist(),mag_errs[iPlot].tolist()):
 			err_xs.append((x, x))
 			err_ys.append((y - yerr, y + yerr))
 		ax.multi_line(err_xs, err_ys, color=color, muted_alpha=0.2)#, legend='%s - %s'%(
 
-		legend_it.append(('%s - %s'%(b.instrument.telescope.name,b.name), [p]))
-		#b.instrument.telescope.name,b.name))
-		#legend_it.append(('%s - %s'%(b.instrument.telescope.name,b.name), [p]))
-		
+		legend_it.append(('%s - %s'%(inn,bn), [p]))
+
 	today = Time(datetime.datetime.today()).mjd
-	p = ax.line(today,20,line_width=3,line_color='black')#,legend='today (%i)'%today)
+	p = ax.line(today,20,line_width=3,line_color='black')
 	legend_it.append(('today (%i)'%today, [p]))
 	vline = Span(location=today, dimension='height', line_color='black',
 				 line_width=3)
 	ax.add_layout(vline)
-	from bokeh.models import Legend
-	legend = Legend(items=legend_it) #, location=(0,-500)) #location="bottom_right")
-	legend.click_policy="mute"
+	legend = Legend(items=legend_it)
+	legend.click_policy="hide"
 	legend.label_height = 1
 	legend.glyph_height = 20
-	
-	ax.add_layout(legend, 'below')
-	
-	#ax.legend.location = 'bottom_center'
-	
-	#ax.legend.label_text_font_size = "4pt"#FontSizeSpec("10")
-	#ax.legend.click_policy="hide"
 
-	
+	ax.add_layout(legend, 'below')
+
 	ax.xaxis.axis_label = 'MJD'
 	ax.yaxis.axis_label = 'Mag'
-
-	if limmjd:
-		ax.x_range = Range1d(limmjd,np.max(mjd)+10)
-		ax.y_range = Range1d(np.max(np.append(mag[mjd > limmjd],upperlimmag[upperlimmjd > limmjd]))+0.25,
-							 np.min(mag[mjd > limmjd])-0.5)
-		ax.extra_x_ranges = {"dateax": Range1d(limmjd,np.max(mjd)+10)}
-		ax.add_layout(LinearAxis(x_range_name="dateax"), 'above')
-		
+	if len(mjds[disc_points == 1]):
+		limmjd = np.min(mjds[disc_points == 1])-30
+		ax.x_range=Range1d(limmjd,np.max(mjds)+10)
+		ax.extra_x_ranges = {"dateax": Range1d(limmjd,np.max(mjds)+10)}
+		ax.y_range = Range1d(np.max(np.append(mags[mags != None][mjds[mags != None] > limmjd],upperlimmag[upperlimmjd > limmjd]))+0.25,
+							 np.min(mags[mags != None][mjds[mags != None] > limmjd])-0.5)
 	else:
-		ax.x_range=Range1d(np.min(mjd)-10,np.max(mjd)+10)
-		ax.y_range=Range1d(np.max(np.append(mag,upperlimmag))+0.25,np.min(mag)-0.5)
-		ax.extra_x_ranges = {"dateax": Range1d(np.min(mjd)-10,np.max(mjd)+10)}
-		ax.add_layout(LinearAxis(x_range_name="dateax"), 'above')
-		#ax.legend()
+		minmjd = np.max([np.min(mjds)-10,date_to_mjd(transient.disc_date)-30])
+		ax.x_range=Range1d(minmjd,np.max(mjds)+10)
+		ax.extra_x_ranges = {"dateax": Range1d(minmjd,np.max(mjds)+10)}
+		ax.y_range=Range1d(np.max(np.append(mags[mags != None],upperlimmag))+0.25,np.min(mags[mags != None])-0.5)
+        
+	#ax.y_range=Range1d(np.max(mags[mags != None])+0.25,np.min(mags[mags != None])-0.5)
+	ax.add_layout(LinearAxis(x_range_name="dateax"), 'above')
+
 	ax.plot_height = 400+20*len(bandunq)
 	ax.plot_width = 400
 
 	majorticks = []; overridedict = {}
-	mjdrange = range(int(np.min(mjd)-100),int(np.max(mjd)+100))
+	mjdrange = range(int(np.min(mjds)-100),int(np.max(mjds)+100))
 	times = Time(mjdrange,format='mjd')
-	if (not limmjd and np.max(mjd)+10 - (np.min(mjd)-10) > 300) or \
-	   (limmjd and np.max(mjd)+10 - limmjd > 300):
+	if (not limmjd and np.max(mjds)+10 - (np.min(mjds)-10) > 300) or \
+	   (limmjd and np.max(mjds)+10 - limmjd > 300):
 		count = 0
 		for m,t in zip(mjdrange,times):
 			tm_list = t.iso.split()[0].split('-')
@@ -1061,7 +1027,6 @@ def lightcurveplot_detail(request, transient_id, salt2=False):
 	ax.xaxis[0].ticker = majorticks
 	ax.xaxis[0].major_label_overrides = overridedict
 
-
 	# add absolute mag axis
 	if transient.redshift: z = transient.redshift
 	elif transient.host and transient.host.redshift: z = transient.host.redshift
@@ -1072,7 +1037,6 @@ def lightcurveplot_detail(request, transient_id, salt2=False):
 		ax.extra_y_ranges = {"Abs. Mag": Range1d(start=ax.y_range.start-mu, end=ax.y_range.end-mu)}
 		ax.add_layout(LinearAxis(y_range_name="Abs. Mag", axis_label="Abs. Mag"), 'right')
 
-	
 	if salt2:
 		model = sncosmo.Model(source='salt2')
 		if transient.redshift:
@@ -1080,13 +1044,16 @@ def lightcurveplot_detail(request, transient_id, salt2=False):
 		elif transient.host and transient.host.redshift:
 			model.set(z=transient.host.redshift); fitparams = ['t0', 'x0', 'x1', 'c']
 		else: fitparams = ['z', 't0', 'x0', 'x1', 'c']
-			
-		zp = np.array([27.5]*len(salt2band))
-		data = Table([salt2mjd,salt2band,flux,fluxerr,zp,zpsys],names=['mjd','band','flux','fluxerr','zp','zpsys'],meta={'t0':salt2mjd[flux == np.max(flux)]})
 
-		pkguess = np.atleast_1d(salt2mjd[flux/fluxerr > 3][flux[flux/fluxerr > 3] == np.max(flux[flux/fluxerr > 3])])
+		zp = np.array([27.5]*len(salt2band))
+		data = Table([salt2mjd,salt2band,salt2flux.astype(float),salt2fluxerr.astype(float),zp,zpsys],
+					 names=['mjd','band','flux','fluxerr','zp','zpsys'],
+					 meta={'t0':salt2mjd[salt2flux == np.max(salt2flux)]})
+
+		pkguess = np.atleast_1d(salt2mjd[salt2flux/salt2fluxerr > 3][salt2flux[salt2flux/salt2fluxerr > 3] == np.max(salt2flux[salt2flux/salt2fluxerr > 3])])
 		if len(pkguess):
 			pkguess = pkguess[0]
+			data = data[(salt2mjd > pkguess-20) & (salt2mjd < pkguess+40)]
 			result, fitted_model = sncosmo.fit_lc(
 				data, model, fitparams,
 				bounds={'t0':(pkguess-10, pkguess+10),
@@ -1094,19 +1061,20 @@ def lightcurveplot_detail(request, transient_id, salt2=False):
 
 			count = 0
 			plotmjd = np.arange(result['parameters'][1]-20,result['parameters'][1]+50,0.5)
-			bandunq,idx = np.unique(bandstr,return_index=True)
-			for bs,b,bc in zip(bandunq,band[idx],bandcolor[idx]):
+			bandunq,idx = np.unique(band,return_index=True)
+			for bs,bn,b,bc,bsym,inn in zip(
+					bandunq,band_name[idx],band[idx],disp_color[idx],disp_symbol[idx],instrument_name[idx]):
 				if bc != 'None' and bc:
 					color = bc
 				else:
 					coloridx = count % len(np.unique(colorlist))
 					color = colorlist[coloridx]
 					count += 1
-
-				if bs in bandpassdict.keys() and bandpassdict[bs] in salt2band:
-					salt2flux = fitted_model.bandflux(bandpassdict[bs], plotmjd, zp=27.5,zpsys=zpsys[bandpassdict[bs] == salt2band][0])
+				bandkey = 'Band: %s - %s'%(inn,bn)
+				if bandkey in bandpassdict.keys() and bandpassdict[bandkey] in salt2band:
+					salt2flux = fitted_model.bandflux(bandpassdict[bandkey], plotmjd, zp=27.5,zpsys=zpsys[bandpassdict[bandkey] == salt2band][0])
 					ax.line(plotmjd,-2.5*np.log10(salt2flux)+27.5,color=color)
-				
+
 		lcphase = today-result['parameters'][1]
 		if lcphase > 0: lcphase = '+%.1f'%(lcphase)
 		else: lcphase = '%.1f'%(lcphase)
@@ -1133,7 +1101,9 @@ def lightcurveplot_detail(request, transient_id, salt2=False):
 			ax.add_layout(latex)
 
 	g = file_html(ax,CDN,"my plot")
+	print("plotting took %s"%(time.time()-tstart))
 	return HttpResponse(g.replace('width: 90%','width: 100%'))
+
 
 def lightcurveplot_flux(request, transient_id, salt2=False):
 	import time
@@ -1296,9 +1266,8 @@ def lightcurveplot_flux(request, transient_id, salt2=False):
 	hline = Span(location=0, dimension='width', line_color='black',
 				 line_width=3)
 	ax.add_layout(hline)
-	from bokeh.models import Legend
 	legend = Legend(items=legend_it)
-	legend.click_policy="mute"
+	legend.click_policy="hide"
 	legend.label_height = 1
 	legend.glyph_height = 20
 	
@@ -1414,37 +1383,192 @@ def lightcurveplot_flux(request, transient_id, salt2=False):
 def spectrumplot(request, transient_id):
 	tstart = time.time()
 	transient = Transient.objects.get(pk=transient_id)
-	spectrum = SpectraService.GetAuthorizedTransientSpectrum_ByUser_ByTransient(request.user, transient_id, includeBadData=True)
+	dbspectra = SpectraService.GetAuthorizedTransientSpectrum_ByUser_ByTransient(request.user, transient_id, includeBadData=True).select_related()
+	spectra = {}
 
-	if not len(spectrum):
+	if not len(dbspectra):
 		return django.http.HttpResponse('')
-	else:
-		spectrum = spectrum[0]
-	spec = TransientSpecData.objects.filter(spectrum=spectrum)
+
 	
-	if not len(spec):
-		return django.http.HttpResponse('')
+	dates = []
+	for i,spectrum in enumerate(dbspectra):
+		spec = TransientSpecData.objects.filter(spectrum=spectrum)
 
-	#figure is a function in the bokeh module
-	#HELLO
-	wave,flux = [],[]
-	for s in spec:
-		wave += [s.wavelength]
-		flux += [s.flux]
+		wave = list(spec.values_list('wavelength',flat=True))
+		flux = list(spec.values_list('flux',flat=True))
 
-	bottom = np.percentile(flux,5)*0.5; top = np.percentile(flux,95)*1.3
-	if np.percentile(flux,2) < 0:
-		bottom = np.percentile(flux,2)*1.5
-	ax=figure(plot_width=240,plot_height=240,sizing_mode='stretch_both',
-			  y_range=(bottom, top))
-	ax.line(np.sort(wave),np.array(flux)[np.argsort(wave)],color='black')
+		#figure is a function in the bokeh module
+		#HELLO
+		#wave,flux = [],[]
+		#for s in spec:
+		#	wave += [s.wavelength]
+		#	flux += [s.flux]
+		flux = np.array(flux)[np.argsort(wave)]
+		wave = np.sort(wave)
+			
+		spec = Table([wave,flux],names=['wave','flux'])			
+		spectra[i] = spec
+		spectra[i].mjd = date_to_mjd(spectrum.obs_date.isoformat().split('+')[0])
+		n_pix = len(wave)
+		sort_flux = np.sort(flux)
 
-	ax.title.text = "%s, %s, %s, Phase: %s, DQ: %s"%(transient.name,spectrum.obs_date.strftime('%m/%d/%Y'),spectrum.instrument,spectrum.spec_phase,spectrum.data_quality)
+		if len(flux):
+			minval = sort_flux[round(n_pix*0.05)]
+			maxval = sort_flux[round(n_pix*0.95)]
+			minval = minval*0.5
+			maxval = maxval*1.1
+			scale = maxval - minval
+			spectra[i].minval = minval
+			spectra[i].maxval = maxval
+			spectra[i].scale  = scale
+
+		dates.append(spectra[i].mjd)
+
+	dates = np.array(dates)
+	temp = np.argsort(-dates)
+	temp2 = np.argsort(dates)
+	offset = np.empty_like(temp)
+	offset[temp] = np.arange(len(dates))
+	ax=figure(plot_width=240,plot_height=240,sizing_mode='stretch_width',y_range=(-0.15, len(dbspectra)+0.15))
+
+
+	colors = itertools.cycle(palette)
+	legend_it = [None]*len(dbspectra)
+	for i,color in zip(range(len(dbspectra)),colors):
+		spectra[i].offset = offset[i]
+
+		if len(spectra[i]['flux']):
+			p = ax.line(spectra[i]['wave'], (spectra[i]['flux']-spectra[i].minval)/spectra[i].scale + spectra[i].offset,
+						color=color,muted_alpha=0.2)
+		legend_it[np.where(temp2 == i)[0][0]] = ('%s - %s'%(dbspectra[i].instrument.name,dbspectra[i].obs_date.strftime('%Y-%m-%d')), [p])
+	
+	legend = Legend(items=legend_it, location="bottom_right")
+	legend.click_policy="mute"
+	legend.label_height = 1
+	legend.glyph_height = 20
+	ax.add_layout(legend) #, 'right')
+
+	ax.plot_height = 400+50*len(dbspectra)
+	ax.plot_width = 400
+	
 	ax.xaxis.axis_label = r'Wavelength (Angstrom)'
 	ax.yaxis.axis_label = 'Flux'
 	g = file_html(ax,CDN,"spectrum plot")
 	time.sleep(5)
 	return HttpResponse(g.replace('width: 90%','width: 100%'))
+
+def spectrumplot_summary(request, transient_id):
+	tstart = time.time()
+	transient = Transient.objects.get(pk=transient_id)
+	dbspectra = SpectraService.GetAuthorizedTransientSpectrum_ByUser_ByTransient(request.user, transient_id, includeBadData=True).select_related()
+	spectra = {}
+
+	if not len(dbspectra):
+		return django.http.HttpResponse('')
+
+	
+	dates = []
+	for i,spectrum in enumerate(dbspectra):
+		spec = TransientSpecData.objects.filter(spectrum=spectrum)
+
+		wave = list(spec.values_list('wavelength',flat=True))
+		flux = list(spec.values_list('flux',flat=True))
+
+		#figure is a function in the bokeh module
+		#HELLO
+		#wave,flux = [],[]
+		#for s in spec:
+		#	wave += [s.wavelength]
+		#	flux += [s.flux]
+		flux = np.array(flux)[np.argsort(wave)]
+		wave = np.sort(wave)
+			
+		spec = Table([wave,flux],names=['wave','flux'])			
+		spectra[i] = spec
+		spectra[i].mjd = date_to_mjd(spectrum.obs_date.isoformat().split('+')[0])
+		n_pix = len(wave)
+		sort_flux = np.sort(flux)
+
+		if len(flux):
+			minval = sort_flux[round(n_pix*0.05)]
+			maxval = sort_flux[round(n_pix*0.95)]
+			minval = minval*0.5
+			maxval = maxval*1.1
+			scale = maxval - minval
+			spectra[i].minval = minval
+			spectra[i].maxval = maxval
+			spectra[i].scale  = scale
+
+		dates.append(spectra[i].mjd)
+
+	dates = np.array(dates)
+	temp = np.argsort(-dates)
+	temp2 = np.argsort(dates)
+	offset = np.empty_like(temp)
+	offset[temp] = np.arange(len(dates))
+	ax=figure(plot_width=240,plot_height=240,sizing_mode='stretch_width',y_range=(-0.15, len(dbspectra)+0.15))
+
+
+	colors = itertools.cycle(palette)
+	legend_it = [None]*len(dbspectra)
+	for i,color in zip(range(len(dbspectra)),colors):
+		spectra[i].offset = offset[i]
+
+		if len(spectra[i]['flux']):
+			p = ax.line(spectra[i]['wave'], (spectra[i]['flux']-spectra[i].minval)/spectra[i].scale + spectra[i].offset,
+						color=color,muted_alpha=0.2)
+		legend_it[np.where(temp2 == i)[0][0]] = ('%s - %s'%(dbspectra[i].instrument.name,dbspectra[i].obs_date.strftime('%Y-%m-%d')), [p])
+	
+	legend = Legend(items=legend_it, location="bottom_right")
+	legend.click_policy="mute"
+	legend.label_height = 1
+	legend.glyph_height = 20
+	ax.add_layout(legend) #, 'right')
+
+	ax.plot_height = 200 #150+30*len(dbspectra)
+	ax.plot_width = 400
+	
+	ax.xaxis.axis_label = r'Wavelength (Angstrom)'
+	ax.yaxis.axis_label = 'Flux'
+	g = file_html(ax,CDN,"spectrum plot")
+	time.sleep(5)
+	return HttpResponse(g.replace('width: 90%','width: 100%'))
+
+
+#def spectrumplot(request, transient_id):
+#	tstart = time.time()
+#	transient = Transient.objects.get(pk=transient_id)
+#	spectrum = SpectraService.GetAuthorizedTransientSpectrum_ByUser_ByTransient(request.user, transient_id, includeBadData=True)
+#
+#	if not len(spectrum):
+#		return django.http.HttpResponse('')
+#	else:
+#		spectrum = spectrum[0]
+#	spec = TransientSpecData.objects.filter(spectrum=spectrum)
+#	
+#	if not len(spec):
+#		return django.http.HttpResponse('')
+#
+#	#figure is a function in the bokeh module
+#	#HELLO
+#	wave,flux = [],[]
+#	for s in spec:
+#		wave += [s.wavelength]
+#		flux += [s.flux]
+#
+#	bottom = np.percentile(flux,5)*0.5; top = np.percentile(flux,95)*1.3
+#	if np.percentile(flux,2) < 0:
+#		bottom = np.percentile(flux,2)*1.5
+#	ax=figure(plot_width=240,plot_height=240,sizing_mode='stretch_both',
+#			  y_range=(bottom, top))
+#	ax.line(np.sort(wave),np.array(flux)[np.argsort(wave)],color='black')
+#
+#	ax.title.text = "%s, %s, %s, Phase: %s, DQ: %s"%(transient.name,spectrum.obs_date.strftime('%m/%d/%Y'),spectrum.instrument,spectrum.spec_phase,spectrum.data_quality)
+#	ax.xaxis.axis_label = r'Wavelength (Angstrom)'
+#	ax.yaxis.axis_label = 'Flux'
+#	g = file_html(ax,CDN,"spectrum plot")
+#	time.sleep(5)
+#	return HttpResponse(g.replace('width: 90%','width: 100%'))
 
 def spectrumplotsingle(request, transient_id, spec_id):
 	
@@ -1487,59 +1611,79 @@ def spectrumplotsingle(request, transient_id, spec_id):
 
 def rise_time(request,transient_id,obs_id):
 
-	tstart = time.time()
-	transient = Transient.objects.filter(id=transient_id)[0]
-	coords = transient.CoordString()
+	def rise_func(transient_id,obs_id,risedict):
+		tstart = time.time()
+		transient = Transient.objects.filter(id=transient_id)[0]
+		coords = transient.CoordString()
 
-	obsnight = ClassicalObservingDate.objects.get(pk=obs_id)
-	
-	tme = Time(str(obsnight.obs_date).split()[0])
-	sc = SkyCoord('%s %s'%(coords[0],coords[1]),unit=(u.hourangle,u.deg))
+		obsnight = ClassicalObservingDate.objects.get(pk=obs_id)
 
-	location = EarthLocation.from_geodetic(
-		obsnight.resource.telescope.longitude*u.deg,obsnight.resource.telescope.latitude*u.deg,
-		obsnight.resource.telescope.elevation*u.m)
-	tel = Observer(location=location, timezone="UTC")
+		tme = Time(str(obsnight.obs_date).split()[0])
+		sc = SkyCoord('%s %s'%(coords[0],coords[1]),unit=(u.hourangle,u.deg))
 
-	target_rise_time = tel.target_rise_time(tme,sc,horizon=18*u.deg,which="previous")
-	
-	if target_rise_time:
-		risetime = target_rise_time.isot.split('T')[-1]
-	else: 
-		risetime = None
-			
-	print(time.time()-tstart)
-	risedict = {'rise_time':risetime}
+		location = EarthLocation.from_geodetic(
+			obsnight.resource.telescope.longitude*u.deg,obsnight.resource.telescope.latitude*u.deg,
+			obsnight.resource.telescope.elevation*u.m)
+		tel = Observer(location=location, timezone="UTC")
+
+		target_rise_time = tel.target_rise_time(tme,sc,horizon=18*u.deg,which="previous")
+
+		if target_rise_time:
+			try: risetime = target_rise_time.isot.split('T')[-1]
+			except: risetime = None
+		else: 
+			risetime = None
+
+		print('rise time took %s'%(time.time()-tstart))
+		risedict = {'rise_time':risetime}
+		return
+		
+	risedict = {'rise_time':''}
+	action = Process(target=rise_func,args=(transient_id,obs_id,risedict))
+	action.start()
+	action.join(timeout=1)
+	action.terminate()
+
 	return JsonResponse(risedict)
 
+    
 def set_time(request,transient_id,obs_id):
 
-	import time
-	tstart = time.time()
-	transient = Transient.objects.filter(id=transient_id)[0]
-	coords = transient.CoordString()
+	def set_func(transient_id,obs_id,setdict):
+		tstart = time.time()
+		transient = Transient.objects.filter(id=transient_id)[0]
+		coords = transient.CoordString()
 
-	obsnight = ClassicalObservingDate.objects.get(pk=obs_id)
-	
-	tme = Time(str(obsnight.obs_date).split()[0])
-	sc = SkyCoord('%s %s'%(coords[0],coords[1]),unit=(u.hourangle,u.deg))
+		obsnight = ClassicalObservingDate.objects.get(pk=obs_id)
 
-	location = EarthLocation.from_geodetic(
-		obsnight.resource.telescope.longitude*u.deg,obsnight.resource.telescope.latitude*u.deg,
-		obsnight.resource.telescope.elevation*u.m)
-	tel = Observer(location=location, timezone="UTC")
+		tme = Time(str(obsnight.obs_date).split()[0])
+		sc = SkyCoord('%s %s'%(coords[0],coords[1]),unit=(u.hourangle,u.deg))
 
-	target_set_time = tel.target_set_time(tme,sc,horizon=18*u.deg,which="previous")
-	
-	if target_set_time:
-		settime = target_set_time.isot.split('T')[-1]
-	else: 
-		settime = None
-			
-	print(time.time()-tstart)
-	setdict = {'set_time':settime}
+		location = EarthLocation.from_geodetic(
+			obsnight.resource.telescope.longitude*u.deg,obsnight.resource.telescope.latitude*u.deg,
+			obsnight.resource.telescope.elevation*u.m)
+		tel = Observer(location=location, timezone="UTC")
+
+		target_set_time = tel.target_set_time(tme,sc,horizon=18*u.deg,which="previous")
+
+		if target_set_time:
+			try: settime = target_set_time.isot.split('T')[-1]
+			except: settime = None
+		else: 
+			settime = None
+
+		print('set time took %s'%(time.time()-tstart))
+		setdict = {'set_time':settime}
+
+	setdict = {'set_time':''}
+	action = Process(target=set_func,args=(transient_id,obs_id,setdict))
+	action.start()
+	action.join(timeout=1.0)
+	action.terminate()
+
 	return JsonResponse(setdict)
 
+        
 def moon_angle(request,transient_id,obs_id):
 	transient = Transient.objects.filter(id=transient_id)[0]
 	coords = transient.CoordString()
@@ -1570,7 +1714,8 @@ def tonight_rise_time(request,transient_id,too_id):
 	target_rise_time = tel.target_rise_time(time,sc,horizon=18*u.deg,which="previous")
 
 	if target_rise_time:
-		returnstarttime = target_rise_time.isot.split('T')[-1]
+		try: returnstarttime = target_rise_time.isot.split('T')[-1]
+		except: returnstarttime = None
 	else: returnstarttime = None
 
 	risedict = {'rise_time':returnstarttime}
@@ -1593,7 +1738,8 @@ def tonight_set_time(request,transient_id,too_id):
 	target_set_time = tel.target_set_time(time,sc,horizon=18*u.deg,which="previous")
 
 	if target_set_time:
-		returnstarttime = target_set_time.isot.split('T')[-1]
+		try: returnstarttime = target_set_time.isot.split('T')[-1]
+		except: returnstarttime = None
 	else: returnstarttime = None
 
 	setdict = {'set_time':returnstarttime}

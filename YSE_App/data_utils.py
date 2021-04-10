@@ -86,11 +86,9 @@ def add_yse_survey_fields(request):
 
 		# no clobbering for now
 		if len(dbsurveyfield):
-		#	dbsurveyfield.update(**surveydict)
 			dbsurveyfield = dbsurveyfield[0]
 		else:
 			dbsurveyfield = SurveyField.objects.create(**surveydict)
-			#survey_entries += [dbsurveyfield]
 
 		surveymsb = SurveyFieldMSB.objects.filter(name=surveydict['field_id'].split('.')[0])
 		if not len(surveymsb):
@@ -101,11 +99,11 @@ def add_yse_survey_fields(request):
 			surveymsb.save()
 		elif len(surveymsb):
 			surveymsb = surveymsb[0]
-			if surveymsb.survey_fields.count() < 6 and not len(surveymsb.survey_fields.filter(field_id=dbsurveyfield.field_id)):
+			if surveymsb.survey_fields.count() < 6 and \
+			   not len(surveymsb.survey_fields.filter(field_id=dbsurveyfield.field_id)):
 				surveymsb.survey_fields.add(dbsurveyfield)
 				surveymsb.save()
 
-	#SurveyField.objects.bulk_create(survey_entries)
 	return_dict = {"message":"success"}
 	return JsonResponse(return_dict)
 
@@ -146,16 +144,34 @@ def add_yse_survey_obs(request):
 				if surveykey == 'photometric_band':
 					fk = fkmodel.objects.filter(name=survey[surveykey].split('-')[1]).filter(instrument__name=survey[surveykey].split('-')[0])
 				elif surveykey == 'survey_field':
-					#fk = fkmodel.objects.filter(field_id=survey[surveykey])
-					#import pdb; pdb.set_trace()
-					fk = fkmodel.objects.filter(Q(ra_cen__gt=float(survey['ra_cen'])-0.1) & Q(ra_cen__lt=float(survey['ra_cen'])+0.1) &
-												Q(dec_cen__gt=float(survey['dec_cen'])-0.1) & Q(dec_cen__lt=float(survey['dec_cen'])+0.1))
+					# find survey field, approx 30-arcsec matching
+					fk = fkmodel.objects.filter(Q(ra_cen__gt=float(survey['ra_cen'])-0.01) & Q(ra_cen__lt=float(survey['ra_cen'])+0.01) &
+												Q(dec_cen__gt=float(survey['dec_cen'])-0.01) & Q(dec_cen__lt=float(survey['dec_cen'])+0.01))
+					
+					# if there's no RA/Dec match, find field based on name
 					if not len(fk):
 						fk = fkmodel.objects.filter(field_id=survey[surveykey])
-						fk_edit = fk[0]
-						fk_edit.ra_cen = survey['ra_cen']
-						fk_edit.dec_cen = survey['dec_cen']
-						fk_edit.save()
+						
+						fk_new = fk[0]
+						fk_new.ra_cen = survey['ra_cen']
+						fk_new.dec_cen = survey['dec_cen']
+						# replace the field id, add a date to the field name
+						orig_id = fk_new.field_id[:]
+						if '_' in orig_id: field_ext = orig_id.split('_')[-1]
+						else: field_ext = '1'
+						new_field_id = orig_id.split('.')[0] + '.' + orig_id.split('.')[1] + '_' + field_ext
+						fk_new.field_id = new_field_id
+						fk_new.pk = None
+						fk_new.save()
+
+						# then make sure the MSB is up to date
+						msblist = SurveyFieldMSB.objects.filter(survey_fields__in=[fk[0]])
+						for msb in msblist:
+							# hopefully there's only one....
+							msb.survey_fields.remove(fk[0])
+							msb.survey_fields.add(fk_new)
+							# might end up with 7 fields in the MSB in rare cases
+								
 					if not len(fk):
 						try: ztf_id = survey[surveykey].split('.')[0]
 						except: ztf_id = None
@@ -176,6 +192,7 @@ def add_yse_survey_obs(request):
 
 				surveydict[surveykey] = fk[0]
 
+		# find pre-existing observation record
 		dbsurveyfield = SurveyObservation.objects.filter(
 			survey_field=surveydict['survey_field']).filter(
 				obs_mjd__gt=float(surveydict['obs_mjd'])-0.01).filter(
@@ -245,10 +262,11 @@ def add_transient(request):
 				   transientkey == 'host' or \
 				   transientkey == 'tags' or \
 				   transientkey == 'gw' or \
-				   transientkey == 'non_detect_instrument': continue
+				   transientkey == 'non_detect_instrument' or \
+				   transientkey == 'internal_names': continue
 
 				if not isinstance(Transient._meta.get_field(transientkey), ForeignKey):
-					transientdict[transientkey] = transient[transientkey]
+					if transient[transientkey] is not None: transientdict[transientkey] = transient[transientkey]
 				else:
 					fkmodel = Transient._meta.get_field(transientkey).remote_field.model
 					if transientkey == 'non_detect_band' and 'non_detect_instrument' in transient.keys():
@@ -269,19 +287,22 @@ def add_transient(request):
 					transientdict[transientkey] = fk[0]
 
 			dbtransient = Transient.objects.filter(name=transient['name'])
+			if len(dbtransient) > 1:
+				dbtransient.filter(~Q(pk=dbtransient[0].id)).delete()
+				dbtransient = Transient.objects.filter(name=transient['name'])
+
 			if not len(dbtransient):
 				# check RA/dec
 				ramin,ramax,decmin,decmax = getRADecBox(transient['ra'],transient['dec'],size=0.00042)
-				#dbtransient = Transient.objects.filter(
-				#	Q(ra__gt=ramin) & Q(ra__lt=ramax) & Q(dec__gt=decmin) & Q(dec__lt=decmax) &
-				#	Q(disc_date__year=transient['disc_date'].split('-')[0]))
-				#dateutil.parser.parse(obs_date)
-#				import pdb; pdb.set_trace()
-				dbtransient = Transient.objects.filter(
-					Q(ra__gt=ramin) & Q(ra__lt=ramax) & Q(dec__gt=decmin) & Q(dec__lt=decmax) &
-					Q(disc_date__gte=dateutil.parser.parse(transient['disc_date'])-datetime.timedelta(365)) &
-					Q(disc_date__lte=dateutil.parser.parse(transient['disc_date'])+datetime.timedelta(365)))
-				
+				if 'disc_date' in transient.keys():
+					dbtransient = Transient.objects.filter(
+						Q(ra__gt=ramin) & Q(ra__lt=ramax) & Q(dec__gt=decmin) & Q(dec__lt=decmax) &
+						Q(disc_date__gte=dateutil.parser.parse(transient['disc_date'])-datetime.timedelta(365)) &
+						Q(disc_date__lte=dateutil.parser.parse(transient['disc_date'])+datetime.timedelta(365)))
+				else:
+					dbtransient = Transient.objects.filter(
+						Q(ra__gt=ramin) & Q(ra__lt=ramax) & Q(dec__gt=decmin) & Q(dec__lt=decmax))
+					
 				if len(dbtransient):
 					#dbtransient = dbtransient[0]
 					obs_group = ObservationGroup.objects.get(name=transient['obs_group'])
@@ -326,6 +347,7 @@ def add_transient(request):
 							tagobj = TransientTag.objects.get(name=tag)
 							dbtransient[0].tags.add(tagobj)
 							dbtransient[0].save()
+					
 				else:
 					dbtransient = Transient(**transientdict)
 					
@@ -351,6 +373,22 @@ def add_transient(request):
 							tagobj = TransientTag.objects.get(name=tag)
 							dbtransient[0].tags.add(tagobj)
 							dbtransient[0].save()
+				if 'internal_names' in transient.keys():
+					for internal_name in transient['internal_names'].split(','):
+						# see if exists
+						alt = AlternateTransientNames.objects.filter(name=internal_name)
+						if len(alt): continue
+
+						# try to figure out the observation group (this isn't perfect)
+						altgroup = ObservationGroup.objects.filter(name__startswith=internal_name.replace(' ','')[:3])
+						if len(altgroup) != 1:
+							altgroup = ObservationGroup.objects.filter(name='Unknown')
+
+						# make the alternate transient name object
+						AlternateTransientNames.objects.create(
+							name=internal_name,obs_group=altgroup[0],
+							created_by_id=user.id,modified_by_id=user.id,
+							transient=dbtransient[0])
 
 				dbtransient = dbtransient[0]
 
@@ -365,6 +403,7 @@ def add_transient(request):
 			print('Transient %s failed!'%transient['name'])
 			print("Sending email to: %s" % user.username)
 			html_msg = """Alert : YSE_PZ Failed to upload transient %s with error %s at line number %s"""
+			#import pdb; pdb.set_trace()
 			sendemail(from_addr, user.email, subject, html_msg%(transient['name'],e,exc_tb.tb_lineno),
 					  djangoSettings.SMTP_LOGIN, djangoSettings.SMTP_PASSWORD, smtpserver)
 			# sending SMS is too scary for now
@@ -380,7 +419,23 @@ def add_transient(request):
 				tagobj = TransientTag.objects.get(name=tag)
 				dbt.tags.add(tagobj)
 				dbt.save()
-		
+		if 'internal_names' in transient.keys():
+			for internal_name in transient['internal_names'].split(','):
+				# see if exists
+				alt = AlternateTransientNames.objects.filter(name=internal_name)
+				if len(alt): continue
+
+				# try to figure out the observation group (this isn't perfect)
+				altgroup = ObservationGroup.objects.filter(name__startswith=internal_name.replace(' ','')[:3])
+				if len(altgroup) != 1:
+					altgroup = ObservationGroup.objects.filter(name='Unknown')
+
+				# make the alternate transient name object
+				AlternateTransientNames.objects.create(
+					name=internal_name,obs_group=altgroup[0],
+					created_by_id=user.id,modified_by_id=user.id,
+					transient=dbt)
+				
 	# add photometry, spectra, hosts
 	phot_entries = []
 	for transientlistkey in transient_data.keys():
@@ -1236,7 +1291,9 @@ def query_api(request,query_name):
 		if not query.sql.lower().startswith('select'): return Http404('Invalid Query')
 		cursor = connections['explorer'].cursor()
 		cursor.execute(query.sql.replace('%','%%'), ())
-		transients = Transient.objects.filter(name__in=(x[0] for x in cursor)).order_by('-disc_date')
+		#transients = Transient.objects.filter(name__in=(x[0] for x in cursor)).order_by('-disc_date')
+		field_names = [c[0] for c in cursor.description]
+		field_vals = [x for x in cursor]
 		cursor.close()
 	else:
 		#query = UserQuery.objects.filter(python_query = unquote(query_name))
@@ -1246,12 +1303,16 @@ def query_api(request,query_name):
 		except: return Http404('Invalid Query')
 
 	serialized_transients = []
-	for t in transients:
+	for vals in field_vals:
+		#tdict = {"transient_ra":t.ra,"transient_dec":t.dec,
+		#		 "transient_name":t.name,"transient_id":t.id}
+		tdict = {}
+		for f,v in zip(field_names,vals):
+			tdict[f] = v
 		serialized_transients.append(
-			{"transient_ra":t.ra,"transient_dec":t.dec,
-			 "transient_name":t.name,"transient_id":t.id}
+			tdict
 		)
-
+		
 	return_dict = {"transients":serialized_transients }
 		
 	return JsonResponse(return_dict)

@@ -13,7 +13,98 @@ from django.db.models import Q, F, Avg
 from YSE_App.table_utils import *
 from urllib.parse import unquote
 from django.utils import timezone
+from astropy.time import Time
+from django.core import serializers
+from django.http import HttpResponse, HttpResponseRedirect, Http404, JsonResponse
 
+@login_required
+def select_yse_fields(request):
+
+    all_yse_fields = SurveyFieldMSB.objects.filter(survey_fields__obs_group__name='YSE').distinct().order_by('name')
+    active_yse_fields = SurveyFieldMSB.objects.filter(survey_fields__obs_group__name='YSE').filter(active=True).distinct().order_by('name')
+    active_names = active_yse_fields.values_list('name',flat=True)
+
+    current_mjd = Time.now().mjd
+    yse_field_data = ()
+    last_obs_list = []
+    for a in all_yse_fields:
+        if a.name in active_names: continue
+        obs = SurveyObservation.objects.filter(survey_field=a.survey_fields.all()[0]).filter(obs_mjd__isnull=False).order_by('-obs_mjd')
+        if len(obs):
+            last_obs_date = obs[0].obs_mjd
+            days_since_obs = current_mjd - last_obs_date
+        else:
+            last_obs_date = None
+            days_since_obs = None
+        airmass = 0
+        last_obs_list += [days_since_obs if days_since_obs is not None else 1000]
+        yse_field_data += ((a,last_obs_date,days_since_obs,airmass),)
+    idx = np.argsort(last_obs_list)
+    yse_field_data_new = ()
+    for i in idx:
+        yse_field_data_new += (yse_field_data[i],)
+    yse_field_data = yse_field_data_new
+
+    
+    active_yse_field_data = ()
+    first_obs_list = []
+    for a in active_yse_fields:
+        obs = SurveyObservation.objects.filter(survey_field=a.survey_fields.all()[0]).filter(obs_mjd__isnull=False).order_by('-obs_mjd')
+        obs_mjd = np.sort(np.array([om for om in obs.values_list('obs_mjd',flat=True)]))
+        if len(obs_mjd):
+
+            if len(obs_mjd[:-1][obs_mjd[1:]-obs_mjd[:-1] > 60]):
+                first_obs = obs_mjd[1:][obs_mjd[1:]-obs_mjd[:-1] > 60][0]
+            else:
+                first_obs = obs_mjd[0]
+        else:
+            first_obs = None
+
+        obs_mjd = obs.values_list('obs_mjd',flat=True)
+        if len(obs):
+
+            last_obs_date = obs[0].obs_mjd
+            days_since_obs = current_mjd - first_obs
+        else:
+            last_obs_date = None
+            days_since_obs = None
+        airmass = 0
+        first_obs_list += [days_since_obs if days_since_obs is not None else 10000]
+        active_yse_field_data += ((a,first_obs,days_since_obs,airmass),)
+    idx = np.argsort(first_obs_list)[::-1]
+    active_yse_field_data_new = ()
+    for i in idx:
+        active_yse_field_data_new += (active_yse_field_data[i],)
+    active_yse_field_data = active_yse_field_data_new
+
+        
+    # moving fields form
+    yse_move_field_form = yse_forms.YSEMoveFieldsForm()
+    yse_group = ObservationGroup.objects.get(name='YSE')
+    GPC1 = Instrument.objects.get(name='GPC1')
+    all_yse_fields = SurveyField.objects.filter(obs_group__name='YSE').order_by('field_id')
+    
+#    import pdb; pdb.set_trace()
+    context = {'yse_field_data':yse_field_data,
+               'active_yse_field_data':active_yse_field_data,
+               'yse_move_field_form':yse_move_field_form,
+               'yse_group':yse_group,
+               'GPC1':GPC1,
+               'all_yse_fields':all_yse_fields}
+    return render(request, 'YSE_App/select_yse_fields.html', context)
+
+def return_serialized_transients(request):
+
+    if len(request.META['QUERY_STRING'].replace('q=','')) >= 5:
+        transients = Transient.objects.filter(Q(name__startswith=request.META['QUERY_STRING'].replace('q=','')) |
+                                              Q(name=request.META['QUERY_STRING'].replace('q=','')))
+        response = []
+        for t in transients:
+            response += [{"id":t.id,"name":t.name},]
+        return JsonResponse(response,safe=False)
+    else:
+        return JsonResponse([],safe=False)    
+    
 @login_required
 def yse_sky(request):
 
@@ -281,3 +372,66 @@ def yse_msb_change(request,field_to_drop,field_to_add,snid,ra_to_add,dec_to_add)
 	msb.save()
 
 	return redirect('adjust_yse_pointings', field_name=field_to_add,snid=snid)
+
+@login_required
+def yse_fields(request,ra_min_hour,ra_max_hour,min_mag):
+
+	qs = Transient.objects.filter(name__startswith='20').filter(Q(tags__name='YSE'))
+
+	ztfsurveyfields = SurveyField.objects.filter(~Q(obs_group__name='ZTF') & Q(ra_cen__gt=float(ra_min_hour)*360/24.) & Q(ra_cen__lt=float(ra_max_hour)*360/24.)).\
+                                                                     values_list('ztf_field_id').distinct()
+	survey_tables = []
+	for s in ztfsurveyfields:
+		surveyfields = SurveyField.objects.filter(ztf_field_id=s[0])
+		if not len(surveyfields): continue
+		
+		qs_list = []
+		for sf in surveyfields:
+			d = sf.dec_cen*np.pi/180
+			width_corr = 3.3/np.abs(np.cos(d))
+			ra_offset = cd.Angle(width_corr/2., unit=u.deg)
+			dec_offset = cd.Angle(3.3/2., unit=u.deg)
+			
+			qs_list += [(Q(ra__gt = sf.ra_cen-ra_offset.degree) &
+						 Q(ra__lt = sf.ra_cen+ra_offset.degree) &
+						 Q(dec__gt = sf.dec_cen-dec_offset.degree) &
+						 Q(dec__lt = sf.dec_cen+dec_offset.degree))]
+
+		query_full = qs_list[0]
+		for q in qs_list[1:]:
+			query_full = np.bitwise_or(query_full,q)
+		qs_final = qs.filter(query_full)
+			
+
+		recent_mag_raw_query = """
+SELECT pd.mag
+   FROM YSE_App_transient t, YSE_App_transientphotdata pd, YSE_App_transientphotometry p
+   WHERE pd.photometry_id = p.id AND
+   YSE_App_transient.id = t.id AND
+   pd.id = (
+		 SELECT pd2.id FROM YSE_App_transientphotdata pd2, YSE_App_transientphotometry p2
+		 WHERE pd2.photometry_id = p2.id AND p2.transient_id = t.id AND ISNULL(pd2.data_quality_id) = True
+		 ORDER BY pd2.obs_date DESC
+		 LIMIT 1
+	 )
+"""
+		qs_final = qs_final.annotate(recent_mag=RawSQL(recent_mag_raw_query,()))
+		qs_final = qs_final.annotate(min_mag=Min('transientphotometry__transientphotdata__mag'))
+		qs_final = qs_final.filter(min_mag__lt=float(min_mag))
+        
+		days_from_disc_query = """SELECT DATEDIFF(curdate(), t.disc_date) as days_since_disc
+FROM YSE_App_transient t WHERE YSE_App_transient.id = t.id"""
+		qs_final = qs_final.annotate(days_since_disc=RawSQL(days_from_disc_query,()))
+	
+		risingtransientfilter = RisingTransientFilter(request.GET, queryset=qs_final,prefix=str(s[0]))
+		table_rising = FieldTransientTable(risingtransientfilter.qs,prefix=str(s[0]))
+		RequestConfig(request, paginate={'per_page': 20}).configure(table_rising)
+
+		survey_tables += [(table_rising,str(s[0]),risingtransientfilter)]
+
+	if request.META['QUERY_STRING']:
+		anchor = request.META['QUERY_STRING'].split('-')[0]
+	else: anchor = ''	
+	context = {'survey_tables':survey_tables,
+	}
+	return render(request, 'YSE_App/yse_fields.html', context)

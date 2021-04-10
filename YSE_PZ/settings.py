@@ -58,7 +58,7 @@ INSTALLED_APPS = [
 ]
 
 CRON_CLASSES = [
-	'YSE_App.util.TNS_Synopsis.TNS_uploads.TNS_emails',
+	'YSE_App.data_ingest.TNS_uploads.TNS_emails',
 	'YSE_App.data_ingest.Photo_Z.YSE',
 	'YSE_App.data_ingest.SDSS_Photo_Z.YSE',
 	'YSE_App.data_ingest.PS1_cutouts.YSE',
@@ -67,11 +67,18 @@ CRON_CLASSES = [
 	'YSE_App.data_ingest.YSE_observations.SurveyObs',
 	'YSE_App.data_ingest.Query_ZTF.AntaresZTF',
 	'YSE_App.data_ingest.QUB_data.YSE',
+	'YSE_App.data_ingest.Gaia_LC.GaiaLC',
+	'YSE_App.data_ingest.QUB_data.YSE_Weekly',
 	'YSE_App.data_ingest.QUB_data.QUB',
+	'YSE_App.data_ingest.QUB_data.YSE_Stack',
     'YSE_App.rapid.rapid_classify.rapid_classify_cron',
 	'YSE_App.data_ingest.YSE_Forced_Phot.ForcedPhot',
-	'YSE_App.util.TNS_Synopsis.TNS_uploads.TNS_updates',
-	'YSE_App.util.TNS_Synopsis.TNS_uploads.TNS_Ignore_updates'
+	'YSE_App.data_ingest.YSE_Forced_Phot.ForcedPhotUpdate',
+	'YSE_App.data_ingest.TNS_uploads.TNS_updates',
+	'YSE_App.data_ingest.TNS_uploads.TNS_Ignore_updates',
+	'YSE_App.data_ingest.TNS_uploads.TNS_recent',
+    'YSE_App.data_ingest.QUB_data.CheckDuplicates',
+    'YSE_App.data_ingest.PhotometryUploadExample.PhotometryUploads'
 ]
 
 MIDDLEWARE = [
@@ -178,6 +185,8 @@ SMTP_LOGIN = config.get('SMTP_provider', 'SMTP_LOGIN')
 SMTP_PASSWORD = config.get('SMTP_provider', 'SMTP_PASSWORD')
 SMTP_HOST = config.get('SMTP_provider', 'SMTP_HOST')
 SMTP_PORT = config.get('SMTP_provider', 'SMTP_PORT')
+LCOGTUSER = config.get('main', 'lcogtuser')
+LCOGTPASS = config.get('main', 'lcogtpass')
 
 KEPLER_API_ENDPOINT = "http://api.keplerscience.org/is-k2-observing"
 
